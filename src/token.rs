@@ -14,7 +14,7 @@ mod supreme {
 }
 
 use itertools::Itertools as _;
-#[cfg(feature = "diagnostics-error")]
+#[cfg(feature = "diagnostics-report")]
 use miette::{self, Diagnostic, LabeledSpan, SourceCode};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
@@ -27,18 +27,18 @@ use std::str::FromStr;
 use supreme::{BaseErrorKind, StackContext};
 use thiserror::Error;
 
-#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-inspect"))]
+#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 use crate::diagnostics::Span;
-#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-inspect"))]
+#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 use crate::fragment;
 use crate::fragment::{Locate, Stateful};
 use crate::{SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
-#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-inspect"))]
+#[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 pub type Annotation = Span;
 #[cfg(all(
-    not(feature = "diagnostics-error"),
-    not(feature = "diagnostics-inspect")
+    not(feature = "diagnostics-inspect"),
+    not(feature = "diagnostics-report"),
 ))]
 pub type Annotation = ();
 
@@ -62,7 +62,7 @@ impl<'e, 'i> From<TreeEntry<'e, Input<'i>>> for ErrorLocation {
     }
 }
 
-#[cfg(feature = "diagnostics-error")]
+#[cfg(feature = "diagnostics-report")]
 impl From<ErrorLocation> for LabeledSpan {
     fn from(location: ErrorLocation) -> Self {
         let ErrorLocation { offset, context } = location;
@@ -222,7 +222,7 @@ impl<'t> ParseError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics-error")]
+#[cfg(feature = "diagnostics-report")]
 impl<'t> Diagnostic for ParseError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
         Some(Box::new("glob::parse"))
@@ -1253,7 +1253,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     fn glob<'i>(
         terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorTree<'i>>,
     ) -> impl Parser<Input<'i>, Vec<Token<'i, Annotation>>, ErrorTree<'i>> {
-        #[cfg(any(feature = "diagnostics-error", feature = "diagnostics-inspect"))]
+        #[cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
         fn annotate<'i, F>(
             parser: F,
         ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
@@ -1266,8 +1266,8 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
         }
 
         #[cfg(all(
-            not(feature = "diagnostics-error"),
-            not(feature = "diagnostics-inspect")
+            not(feature = "diagnostics-inspect"),
+            not(feature = "diagnostics-report"),
         ))]
         fn annotate<'i, F>(
             parser: F,

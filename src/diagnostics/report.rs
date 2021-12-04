@@ -1,4 +1,4 @@
-#![cfg(feature = "diagnostics-error")]
+#![cfg(feature = "diagnostics-report")]
 
 use itertools::Itertools as _;
 use miette::{Diagnostic, LabeledSpan, SourceSpan};

@@ -10,15 +10,15 @@
 //! neighboring tokens.
 
 use itertools::Itertools as _;
-#[cfg(feature = "diagnostics-error")]
+#[cfg(feature = "diagnostics-report")]
 use miette::{Diagnostic, LabeledSpan, SourceCode, SourceSpan};
 use std::borrow::Cow;
-#[cfg(feature = "diagnostics-error")]
+#[cfg(feature = "diagnostics-report")]
 use std::fmt::Display;
 use thiserror::Error;
 
-#[cfg(feature = "diagnostics-error")]
-use crate::diagnostics::error::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
+#[cfg(feature = "diagnostics-report")]
+use crate::diagnostics::report::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
 use crate::token::{Annotation, Token, TokenKind, Tokenized};
 use crate::{IteratorExt as _, SliceExt as _, Terminals};
 
@@ -27,7 +27,7 @@ use crate::{IteratorExt as _, SliceExt as _, Terminals};
 pub struct RuleError<'t> {
     expression: Cow<'t, str>,
     kind: ErrorKind,
-    #[cfg(feature = "diagnostics-error")]
+    #[cfg(feature = "diagnostics-report")]
     span: CompositeSourceSpan,
 }
 
@@ -35,12 +35,12 @@ impl<'t> RuleError<'t> {
     fn new(
         expression: Cow<'t, str>,
         kind: ErrorKind,
-        #[cfg(feature = "diagnostics-error")] span: CompositeSourceSpan,
+        #[cfg(feature = "diagnostics-report")] span: CompositeSourceSpan,
     ) -> Self {
         RuleError {
             expression,
             kind,
-            #[cfg(feature = "diagnostics-error")]
+            #[cfg(feature = "diagnostics-report")]
             span,
         }
     }
@@ -49,13 +49,13 @@ impl<'t> RuleError<'t> {
         let RuleError {
             expression,
             kind,
-            #[cfg(feature = "diagnostics-error")]
+            #[cfg(feature = "diagnostics-report")]
             span,
         } = self;
         RuleError {
             expression: expression.into_owned().into(),
             kind,
-            #[cfg(feature = "diagnostics-error")]
+            #[cfg(feature = "diagnostics-report")]
             span,
         }
     }
@@ -65,7 +65,7 @@ impl<'t> RuleError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics-error")]
+#[cfg(feature = "diagnostics-report")]
 impl<'t> Diagnostic for RuleError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         Some(Box::new(String::from("glob::rule")))
@@ -103,7 +103,7 @@ pub fn check<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<
 
 fn boundary<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>> {
     eprintln!("CHECKING BOUNDARIES:\n{:#?}", tokenized);
-    #[cfg_attr(not(feature = "diagnostics-error"), allow(unused))]
+    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
     if let Some((left, right)) = tokenized
         .tokens()
         .iter()
@@ -114,7 +114,7 @@ fn boundary<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'
         Err(RuleError::new(
             tokenized.expression().clone(),
             ErrorKind::AdjacentBoundary,
-            #[cfg(feature = "diagnostics-error")]
+            #[cfg(feature = "diagnostics-report")]
             CompositeSourceSpan::span(
                 Some("here"),
                 SourceSpan::from(left).union(&SourceSpan::from(right)),
@@ -133,12 +133,12 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
 
     struct CorrelatedError {
         kind: ErrorKind,
-        #[cfg(feature = "diagnostics-error")]
+        #[cfg(feature = "diagnostics-report")]
         span: CorrelatedSourceSpan,
     }
 
     impl CorrelatedError {
-        #[cfg_attr(not(feature = "diagnostics-error"), allow(unused))]
+        #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
         fn new(
             kind: ErrorKind,
             outer: Option<&Token<Annotation>>,
@@ -146,7 +146,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
         ) -> Self {
             CorrelatedError {
                 kind,
-                #[cfg(feature = "diagnostics-error")]
+                #[cfg(feature = "diagnostics-report")]
                 span: CorrelatedSourceSpan::split_some(
                     outer.map(Token::annotation).cloned().map(From::from),
                     inner.annotation().clone().into(),
@@ -208,7 +208,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
             .unwrap_or(false)
     }
 
-    #[cfg_attr(not(feature = "diagnostics-error"), allow(unused))]
+    #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
     fn diagnose<'t, 'i>(
         expression: &'i Cow<'t, str>,
         token: &'i Token<'t, Annotation>,
@@ -219,13 +219,13 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
     {
         move |CorrelatedError {
                   kind,
-                  #[cfg(feature = "diagnostics-error")]
+                  #[cfg(feature = "diagnostics-report")]
                   span,
               }| {
             RuleError::new(
                 expression.clone(),
                 kind,
-                #[cfg(feature = "diagnostics-error")]
+                #[cfg(feature = "diagnostics-report")]
                 CompositeSourceSpan::correlated(
                     Some(label),
                     SourceSpan::from(*token.annotation()),

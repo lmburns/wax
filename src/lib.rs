@@ -18,7 +18,7 @@ mod token;
 
 use bstr::ByteVec;
 use itertools::{Itertools as _, Position};
-#[cfg(feature = "diagnostics-error")]
+#[cfg(feature = "diagnostics-report")]
 use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
@@ -35,10 +35,10 @@ use walkdir::{self, DirEntry, WalkDir};
 
 pub use walkdir::Error as WalkError;
 
-#[cfg(feature = "diagnostics-error")]
-use crate::diagnostics::error;
 #[cfg(feature = "diagnostics-inspect")]
 use crate::diagnostics::inspect;
+#[cfg(feature = "diagnostics-report")]
+use crate::diagnostics::report;
 use crate::token::{Token, Tokenized};
 
 pub use crate::capture::Captures;
@@ -267,16 +267,16 @@ impl<T> Terminals<T> {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-#[cfg_attr(feature = "diagnostics-error", derive(Diagnostic))]
+#[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
 pub enum GlobError<'t> {
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics-error", diagnostic(transparent))]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
     Parse(ParseError<'t>),
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics-error", diagnostic(transparent))]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
     Rule(RuleError<'t>),
     #[error("failed to walk directory tree: {0}")]
-    #[cfg_attr(feature = "diagnostics-error", diagnostic(code = "glob::walk"))]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(code = "glob::walk"))]
     Walk(WalkError),
 }
 
@@ -512,9 +512,9 @@ impl<'t> Glob<'t> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 
-    #[cfg(feature = "diagnostics-error")]
+    #[cfg(feature = "diagnostics-report")]
     pub fn diagnostics(&self) -> Vec<Box<dyn Diagnostic + '_>> {
-        error::diagnostics(&self.tokenized)
+        report::diagnostics(&self.tokenized)
     }
 
     #[cfg(feature = "diagnostics-inspect")]
