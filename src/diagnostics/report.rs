@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::cmp;
 use thiserror::Error;
 
-use crate::token::{self, Annotation, Tokenized};
+use crate::token::{self, Annotation, TokenKind, Tokenized};
 
 pub trait SourceSpanExt {
     fn union(&self, other: &SourceSpan) -> SourceSpan;
@@ -117,21 +117,42 @@ pub struct SemanticLiteralWarning<'t> {
     span: SourceSpan,
 }
 
+#[derive(Clone, Debug, Diagnostic, Error)]
+#[diagnostic(code(glob::terminating_separator), severity(warning))]
+#[error("terminating separator may discard matches")]
+pub struct TerminatingSeparatorWarning<'t> {
+    #[source_code]
+    expression: Cow<'t, str>,
+    #[label("here")]
+    span: SourceSpan,
+}
+
 pub fn diagnostics<'t>(tokenized: &'t Tokenized<'t, Annotation>) -> Vec<Box<dyn Diagnostic + 't>> {
-    token::components(tokenized.tokens().iter())
-        .flat_map(|component| component.literal().map(|literal| (component, literal)))
-        .filter(|(_, literal)| literal.is_semantic_literal())
-        .map(|(component, literal)| {
-            Box::new(SemanticLiteralWarning {
-                expression: tokenized.expression().clone(),
-                literal: literal.text().clone(),
-                span: component
-                    .tokens()
-                    .iter()
-                    .map(|token| SourceSpan::from(*token.annotation()))
-                    .fold1(|left, right| left.union(&right))
-                    .expect("no tokens in component"),
-            }) as Box<dyn Diagnostic>
-        })
+    None.into_iter()
+        .chain(
+            token::components(tokenized.tokens().iter())
+                .flat_map(|component| component.literal().map(|literal| (component, literal)))
+                .filter(|(_, literal)| literal.is_semantic_literal())
+                .map(|(component, literal)| {
+                    Box::new(SemanticLiteralWarning {
+                        expression: tokenized.expression().clone(),
+                        literal: literal.text().clone(),
+                        span: component
+                            .tokens()
+                            .iter()
+                            .map(|token| SourceSpan::from(*token.annotation()))
+                            .fold1(|left, right| left.union(&right))
+                            .expect("no tokens in component"),
+                    }) as Box<dyn Diagnostic>
+                }),
+        )
+        .chain(tokenized.tokens().last().into_iter().flat_map(|token| {
+            matches!(token.kind(), TokenKind::Separator).then(|| {
+                Box::new(TerminatingSeparatorWarning {
+                    expression: tokenized.expression().clone(),
+                    span: token.annotation().clone().into(),
+                }) as Box<dyn Diagnostic>
+            })
+        }))
         .collect()
 }
