@@ -1,7 +1,7 @@
 #![cfg(feature = "diagnostics-inspect")]
 
 use crate::diagnostics::Span;
-use crate::token::{Annotation, Token};
+use crate::token::Token;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CapturingToken {
@@ -21,7 +21,7 @@ impl CapturingToken {
 
 pub fn captures<'t, I>(tokens: I) -> impl 't + Clone + Iterator<Item = CapturingToken>
 where
-    I: IntoIterator<Item = &'t Token<'t, Annotation>>,
+    I: IntoIterator<Item = &'t Token<'t>>,
     I::IntoIter: 't + Clone,
 {
     tokens

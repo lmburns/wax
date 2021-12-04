@@ -19,7 +19,7 @@ use thiserror::Error;
 
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
-use crate::token::{Annotation, Token, TokenKind, Tokenized};
+use crate::token::{Token, TokenKind, Tokenized};
 use crate::{IteratorExt as _, SliceExt as _, Terminals};
 
 #[derive(Debug, Error)]
@@ -95,13 +95,13 @@ enum ErrorKind {
     AdjacentZeroOrMore,
 }
 
-pub fn check<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>> {
+pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     boundary(tokenized)?;
     group(tokenized)?;
     Ok(())
 }
 
-fn boundary<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>> {
+fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     eprintln!("CHECKING BOUNDARIES:\n{:#?}", tokenized);
     #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
     if let Some((left, right)) = tokenized
@@ -126,7 +126,7 @@ fn boundary<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'
     }
 }
 
-fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>> {
+fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     use crate::token::TokenKind::{Separator, Wildcard};
     use crate::token::Wildcard::{Tree, ZeroOrMore};
     use crate::Terminals::{Only, StartEnd};
@@ -139,11 +139,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
 
     impl CorrelatedError {
         #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
-        fn new(
-            kind: ErrorKind,
-            outer: Option<&Token<Annotation>>,
-            inner: &Token<Annotation>,
-        ) -> Self {
+        fn new(kind: ErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
             CorrelatedError {
                 kind,
                 #[cfg(feature = "diagnostics-report")]
@@ -157,16 +153,12 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
 
     #[derive(Clone, Copy, Default)]
     struct Outer<'t, 'i> {
-        left: Option<&'i Token<'t, Annotation>>,
-        right: Option<&'i Token<'t, Annotation>>,
+        left: Option<&'i Token<'t>>,
+        right: Option<&'i Token<'t>>,
     }
 
     impl<'t, 'i> Outer<'t, 'i> {
-        pub fn push(
-            self,
-            left: Option<&'i Token<'t, Annotation>>,
-            right: Option<&'i Token<'t, Annotation>>,
-        ) -> Self {
+        pub fn push(self, left: Option<&'i Token<'t>>, right: Option<&'i Token<'t>>) -> Self {
             Outer {
                 left: left.or(self.left),
                 right: right.or(self.right),
@@ -174,13 +166,13 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
         }
     }
 
-    fn has_preceding_component_boundary<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+    fn has_preceding_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| token.has_preceding_token_with(&mut |token| token.is_component_boundary()))
             .unwrap_or(false)
     }
 
-    fn has_terminating_component_boundary<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+    fn has_terminating_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token.has_terminating_token_with(&mut |token| token.is_component_boundary())
@@ -188,7 +180,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
             .unwrap_or(false)
     }
 
-    fn has_preceding_zom_token<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+    fn has_preceding_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token.has_preceding_token_with(&mut |token| {
@@ -198,7 +190,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
             .unwrap_or(false)
     }
 
-    fn has_terminating_zom_token<'t>(token: Option<&'t Token<'t, Annotation>>) -> bool {
+    fn has_terminating_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
         token
             .map(|token| {
                 token.has_terminating_token_with(&mut |token| {
@@ -213,7 +205,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
         // This is a somewhat unusual API, but it allows the lifetime `'t` of
         // the `Cow` to be properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
-        token: &'i Token<'t, Annotation>,
+        token: &'i Token<'t>,
         label: &'static str,
     ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
     where
@@ -245,7 +237,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
         outer: Outer<'t, 'i>,
     ) -> Result<(), RuleError<'t>>
     where
-        I: IntoIterator<Item = &'i Token<'t, Annotation>>,
+        I: IntoIterator<Item = &'i Token<'t>>,
         't: 'i,
     {
         for (left, token, right) in tokens
@@ -283,7 +275,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
     }
 
     fn check_group<'t>(
-        terminals: Terminals<&Token<Annotation>>,
+        terminals: Terminals<&Token>,
         outer: Outer<'t, 't>,
     ) -> Result<(), CorrelatedError> {
         let Outer { left, right } = outer;
@@ -379,7 +371,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
     }
 
     fn check_group_alternative<'t>(
-        terminals: Terminals<&Token<Annotation>>,
+        terminals: Terminals<&Token>,
         outer: Outer<'t, 't>,
     ) -> Result<(), CorrelatedError> {
         let Outer { left, .. } = outer;
@@ -406,7 +398,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
     }
 
     fn check_group_repetition<'t>(
-        terminals: Terminals<&Token<Annotation>>,
+        terminals: Terminals<&Token>,
         outer: Outer<'t, 't>,
         bounds: (usize, Option<usize>),
     ) -> Result<(), CorrelatedError> {

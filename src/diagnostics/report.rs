@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::cmp;
 use thiserror::Error;
 
-use crate::token::{self, Annotation, TokenKind, Tokenized};
+use crate::token::{self, TokenKind, Tokenized};
 
 pub trait SourceSpanExt {
     fn union(&self, other: &SourceSpan) -> SourceSpan;
@@ -127,7 +127,7 @@ pub struct TerminatingSeparatorWarning<'t> {
     span: SourceSpan,
 }
 
-pub fn diagnostics<'t>(tokenized: &'t Tokenized<'t, Annotation>) -> Vec<Box<dyn Diagnostic + 't>> {
+pub fn diagnostics<'t>(tokenized: &'t Tokenized<'t>) -> Vec<Box<dyn Diagnostic + 't>> {
     None.into_iter()
         .chain(
             token::components(tokenized.tokens().iter())
