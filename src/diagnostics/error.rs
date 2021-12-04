@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::cmp;
 use thiserror::Error;
 
-use crate::token::{self, Annotation, Token};
+use crate::token::{self, Annotation, Tokenized};
 
 pub trait SourceSpanExt {
     fn union(&self, other: &SourceSpan) -> SourceSpan;
@@ -117,17 +117,13 @@ pub struct SemanticLiteralWarning<'t> {
     span: SourceSpan,
 }
 
-pub fn diagnostics<'t, I>(expression: &Cow<'t, str>, tokens: I) -> Vec<Box<dyn Diagnostic + 't>>
-where
-    I: IntoIterator<Item = &'t Token<'t, Annotation>>,
-    I::IntoIter: 't + Clone,
-{
-    token::components(tokens)
+pub fn diagnostics<'t>(tokenized: &'t Tokenized<'t, Annotation>) -> Vec<Box<dyn Diagnostic + 't>> {
+    token::components(tokenized.tokens().iter())
         .flat_map(|component| component.literal().map(|literal| (component, literal)))
         .filter(|(_, literal)| literal.is_semantic_literal())
         .map(|(component, literal)| {
             Box::new(SemanticLiteralWarning {
-                expression: expression.clone(),
+                expression: tokenized.expression().clone(),
                 literal: literal.text().clone(),
                 span: component
                     .tokens()

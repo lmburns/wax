@@ -32,8 +32,7 @@ use thiserror::Error;
 #[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
 use crate::fragment;
 use crate::fragment::{Locate, Stateful};
-use crate::rule;
-use crate::{GlobError, SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
+use crate::{SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
 #[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
 pub type Annotation = SourceSpan;
@@ -279,6 +278,43 @@ impl Default for FlagState {
 #[derive(Clone, Copy, Debug)]
 enum FlagToggle {
     CaseInsensitive(bool),
+}
+
+#[derive(Clone, Debug)]
+pub struct Tokenized<'t, A = Annotation> {
+    expression: Cow<'t, str>,
+    tokens: Vec<Token<'t, A>>,
+}
+
+impl<'t, A> Tokenized<'t, A> {
+    pub fn into_owned(self) -> Tokenized<'static, A> {
+        let Tokenized { expression, tokens } = self;
+        Tokenized {
+            expression: expression.into_owned().into(),
+            tokens: tokens.into_iter().map(Token::into_owned).collect(),
+        }
+    }
+
+    pub fn partition(&mut self) -> PathBuf {
+        // Get the invariant prefix for the token sequence.
+        let prefix = invariant_prefix_path(self.tokens.iter()).unwrap_or_else(PathBuf::new);
+
+        // Drain invariant tokens from the beginning of the token sequence and
+        // unroot any tokens at the beginning of the sequence (tree wildcards).
+        self.tokens
+            .drain(0..invariant_prefix_upper_bound(&self.tokens));
+        self.tokens.first_mut().map(Token::unroot);
+
+        prefix
+    }
+
+    pub fn expression(&self) -> &Cow<'t, str> {
+        &self.expression
+    }
+
+    pub fn tokens(&self) -> &[Token<'t, A>] {
+        &self.tokens
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -890,7 +926,7 @@ where
     }
 }
 
-pub fn invariant_prefix_upper_bound(tokens: &[Token]) -> usize {
+pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
     use crate::token::TokenKind::{Separator, Wildcard};
     use crate::token::Wildcard::Tree;
 
@@ -920,7 +956,7 @@ pub fn invariant_prefix_upper_bound(tokens: &[Token]) -> usize {
     tokens.len()
 }
 
-pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
+pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     use nom::bytes::complete as bytes;
     use nom::character::complete as character;
     use nom::{branch, combinator, multi, sequence, IResult, Parser};
@@ -1267,22 +1303,28 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     }
 
     if expression.is_empty() {
-        Ok(vec![])
+        Ok(Tokenized {
+            expression: expression.into(),
+            tokens: vec![],
+        })
     }
     else {
         let input = Input::new(Expression::from(expression), ParserState::default());
-        let mut tokens = combinator::all_consuming(glob(combinator::eof))(input)
+        let tokens = combinator::all_consuming(glob(combinator::eof))(input)
             .map(|(_, tokens)| tokens)
-            .map_err(|error| ParseError::new(expression, error))
-            .map_err(GlobError::from)?;
-        rule::check(expression, tokens.iter())?;
+            .map_err(|error| ParseError::new(expression, error))?;
+        // TODO: This is a problem if rules are checked after altering the token
+        //       sequence.
         // Remove any trailing separator tokens. Such separators are meaningless
         // and are typically normalized in paths by removing them or ignoring
         // them in nominal comparisons.
-        while let Some(TokenKind::Separator) = tokens.last().map(Token::kind) {
-            tokens.pop();
-        }
-        Ok(tokens)
+        //while let Some(TokenKind::Separator) = tokens.last().map(Token::kind) {
+        //    tokens.pop();
+        //}
+        Ok(Tokenized {
+            expression: expression.into(),
+            tokens,
+        })
     }
 }
 
@@ -1315,11 +1357,12 @@ mod tests {
 
     #[test]
     fn literal_case_insensitivity() {
-        let tokens = token::parse("(?-i)../foo/(?i)**/bar/**(?-i)/baz/*(?i)qux").unwrap();
-        let literals: Vec<_> = tokens
-            .into_iter()
+        let tokenized = token::parse("(?-i)../foo/(?i)**/bar/**(?-i)/baz/*(?i)qux").unwrap();
+        let literals: Vec<_> = tokenized
+            .tokens()
+            .iter()
             .flat_map(|token| match token.kind {
-                TokenKind::Literal(literal) => Some(literal),
+                TokenKind::Literal(ref literal) => Some(literal),
                 _ => None,
             })
             .collect();
@@ -1334,7 +1377,7 @@ mod tests {
     #[test]
     fn invariant_prefix_path() {
         fn invariant_prefix_path(expression: &str) -> Option<PathBuf> {
-            token::invariant_prefix_path(token::parse(expression).unwrap().iter())
+            token::invariant_prefix_path(token::parse(expression).unwrap().tokens().iter())
         }
 
         assert_eq!(invariant_prefix_path("/a/b").unwrap(), Path::new("/a/b"));

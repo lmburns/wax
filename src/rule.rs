@@ -19,7 +19,7 @@ use thiserror::Error;
 
 #[cfg(feature = "diagnostics-error")]
 use crate::diagnostics::error::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
-use crate::token::{Annotation, Token, TokenKind};
+use crate::token::{Annotation, Token, TokenKind, Tokenized};
 use crate::{IteratorExt as _, SliceExt as _, Terminals};
 
 #[derive(Debug, Error)]
@@ -33,12 +33,12 @@ pub struct RuleError<'t> {
 
 impl<'t> RuleError<'t> {
     fn new(
-        expression: &'t str,
+        expression: Cow<'t, str>,
         kind: ErrorKind,
         #[cfg(feature = "diagnostics-error")] span: CompositeSourceSpan,
     ) -> Self {
         RuleError {
-            expression: expression.into(),
+            expression,
             kind,
             #[cfg(feature = "diagnostics-error")]
             span,
@@ -95,32 +95,24 @@ enum ErrorKind {
     AdjacentZeroOrMore,
 }
 
-pub fn check<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
-where
-    I: IntoIterator<Item = &'i Token<'t, Annotation>>,
-    I::IntoIter: Clone,
-    't: 'i,
-{
-    let tokens = tokens.into_iter();
-    boundary(expression, tokens.clone())?;
-    group(expression, tokens)?;
+pub fn check<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>> {
+    boundary(tokenized)?;
+    group(tokenized)?;
     Ok(())
 }
 
-fn boundary<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
-where
-    I: IntoIterator<Item = &'i Token<'t, Annotation>>,
-    't: 'i,
-{
+fn boundary<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>> {
+    eprintln!("CHECKING BOUNDARIES:\n{:#?}", tokenized);
     #[cfg_attr(not(feature = "diagnostics-error"), allow(unused))]
-    if let Some((left, right)) = tokens
-        .into_iter()
+    if let Some((left, right)) = tokenized
+        .tokens()
+        .iter()
         .tuple_windows::<(_, _)>()
         .find(|(left, right)| left.is_component_boundary() && right.is_component_boundary())
         .map(|(left, right)| (left.annotation(), right.annotation()))
     {
         Err(RuleError::new(
-            expression,
+            tokenized.expression().clone(),
             ErrorKind::AdjacentBoundary,
             #[cfg(feature = "diagnostics-error")]
             CompositeSourceSpan::span(Some("here"), left.union(right)),
@@ -131,11 +123,7 @@ where
     }
 }
 
-fn group<'t, 'i, I>(expression: &'t str, tokens: I) -> Result<(), RuleError<'t>>
-where
-    I: IntoIterator<Item = &'i Token<'t, Annotation>>,
-    't: 'i,
-{
+fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>> {
     use crate::token::TokenKind::{Separator, Wildcard};
     use crate::token::Wildcard::{Tree, ZeroOrMore};
     use crate::Terminals::{Only, StartEnd};
@@ -219,8 +207,8 @@ where
 
     #[cfg_attr(not(feature = "diagnostics-error"), allow(unused))]
     fn diagnose<'t, 'i>(
+        expression: &'i Cow<'t, str>,
         token: &'i Token<'t, Annotation>,
-        expression: &'t str,
         label: &'static str,
     ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
     where
@@ -232,7 +220,7 @@ where
                   span,
               }| {
             RuleError::new(
-                expression,
+                expression.clone(),
                 kind,
                 #[cfg(feature = "diagnostics-error")]
                 CompositeSourceSpan::correlated(Some(label), token.annotation().clone(), span),
@@ -241,7 +229,7 @@ where
     }
 
     fn recurse<'t, 'i, I>(
-        expression: &'t str,
+        expression: &Cow<'t, str>,
         tokens: I,
         outer: Outer<'t, 'i>,
     ) -> Result<(), RuleError<'t>>
@@ -257,7 +245,7 @@ where
             match token.kind() {
                 TokenKind::Alternative(ref alternative) => {
                     let outer = outer.push(left, right);
-                    let diagnose = diagnose(token, expression, "in this alternative");
+                    let diagnose = diagnose(expression, token, "in this alternative");
                     for tokens in alternative.branches() {
                         if let Some(terminals) = tokens.terminals() {
                             check_group(terminals, outer).map_err(diagnose)?;
@@ -268,7 +256,7 @@ where
                 }
                 TokenKind::Repetition(ref repetition) => {
                     let outer = outer.push(left, right);
-                    let diagnose = diagnose(token, expression, "in this repetition");
+                    let diagnose = diagnose(expression, token, "in this repetition");
                     let tokens = repetition.tokens();
                     if let Some(terminals) = tokens.terminals() {
                         check_group(terminals, outer).map_err(diagnose)?;
@@ -465,5 +453,9 @@ where
         }
     }
 
-    recurse(expression, tokens, Default::default())
+    recurse(
+        tokenized.expression(),
+        tokenized.tokens().iter(),
+        Default::default(),
+    )
 }

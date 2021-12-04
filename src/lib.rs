@@ -39,7 +39,7 @@ pub use walkdir::Error as WalkError;
 use crate::diagnostics::error;
 #[cfg(feature = "diagnostics-metadata")]
 use crate::diagnostics::metadata::{self, CapturingToken};
-use crate::token::Token;
+use crate::token::{Token, Tokenized};
 
 pub use crate::capture::Captures;
 pub use crate::rule::RuleError;
@@ -360,10 +360,8 @@ impl<'b> From<&'b str> for EncodedPath<'b> {
 
 #[derive(Clone, Debug)]
 pub struct Glob<'t> {
-    tokens: Vec<Token<'t>>,
+    tokenized: Tokenized<'t>,
     regex: Regex,
-    #[cfg(feature = "diagnostics-error")]
-    expression: Cow<'t, str>,
 }
 
 impl<'t> Glob<'t> {
@@ -375,14 +373,9 @@ impl<'t> Glob<'t> {
     }
 
     pub fn new(expression: &'t str) -> Result<Self, GlobError<'t>> {
-        let tokens = token::parse(expression)?;
-        let regex = Glob::compile(tokens.iter());
-        Ok(Glob {
-            tokens,
-            regex,
-            #[cfg(feature = "diagnostics-error")]
-            expression: expression.into(),
-        })
+        let tokenized = parse_and_check(expression)?;
+        let regex = Glob::compile(tokenized.tokens().iter());
+        Ok(Glob { tokenized, regex })
     }
 
     /// Partitions a glob expression into an invariant `PathBuf` prefix and
@@ -467,58 +460,38 @@ impl<'t> Glob<'t> {
     /// application.
     pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
         // Get the invariant prefix for the token sequence.
-        let mut tokens = token::parse(expression)?;
-        let prefix = token::invariant_prefix_path(tokens.iter()).unwrap_or_else(PathBuf::new);
-
-        // Drain invariant tokens from the beginning of the token sequence.
-        // Unroot any tokens at the beginning of the sequence (tree wildcards).
-        tokens.drain(0..token::invariant_prefix_upper_bound(&tokens));
-        tokens.first_mut().map(Token::unroot);
-
-        let regex = Glob::compile(tokens.iter());
-        Ok((
-            prefix,
-            Glob {
-                tokens,
-                regex,
-                #[cfg(feature = "diagnostics-error")]
-                expression: expression.into(),
-            },
-        ))
+        let mut tokenized = parse_and_check(expression)?;
+        let prefix = tokenized.partition();
+        let regex = Glob::compile(tokenized.tokens().iter());
+        Ok((prefix, Glob { tokenized, regex }))
     }
 
     pub fn into_owned(self) -> Glob<'static> {
-        let Glob {
-            tokens,
-            regex,
-            #[cfg(feature = "diagnostics-error")]
-            expression,
-        } = self;
-        let tokens = tokens.into_iter().map(|token| token.into_owned()).collect();
+        let Glob { tokenized, regex } = self;
         Glob {
-            tokens,
+            tokenized: tokenized.into_owned(),
             regex,
-            #[cfg(feature = "diagnostics-error")]
-            expression: expression.into_owned().into(),
         }
     }
 
     pub fn is_invariant(&self) -> bool {
         // TODO: This may be expensive.
-        self.tokens
+        self.tokenized
+            .tokens()
             .iter()
             .all(|token| token.to_invariant_string().is_some())
     }
 
     pub fn has_root(&self) -> bool {
-        self.tokens
+        self.tokenized
+            .tokens()
             .first()
             .map(|token| token.is_rooted())
             .unwrap_or(false)
     }
 
     pub fn has_semantic_literals(&self) -> bool {
-        token::components(self.tokens.iter()).any(|component| {
+        token::components(self.tokenized.tokens().iter()).any(|component| {
             component
                 .literal()
                 .map(|literal| literal.is_semantic_literal())
@@ -537,12 +510,12 @@ impl<'t> Glob<'t> {
 
     #[cfg(feature = "diagnostics-error")]
     pub fn diagnostics(&self) -> Vec<Box<dyn Diagnostic + '_>> {
-        error::diagnostics(&self.expression, self.tokens.iter())
+        error::diagnostics(&self.tokenized)
     }
 
     #[cfg(feature = "diagnostics-metadata")]
     pub fn metacaptures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
-        metadata::captures(self.tokens.iter())
+        metadata::captures(self.tokenized.tokens().iter())
     }
 
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
@@ -551,7 +524,7 @@ impl<'t> Glob<'t> {
         // invariant prefix from the glob pattern. `Walk` patterns are only
         // applied to path components following the `prefix` (distinct from the
         // glob pattern prefix) in `root`.
-        let (root, prefix, depth) = token::invariant_prefix_path(self.tokens.iter())
+        let (root, prefix, depth) = token::invariant_prefix_path(self.tokenized.tokens().iter())
             .map(|prefix| {
                 let root = directory.join(&prefix).into();
                 if prefix.is_absolute() {
@@ -575,7 +548,7 @@ impl<'t> Glob<'t> {
                 let root = Cow::from(directory);
                 (root.clone(), root, depth)
             });
-        let regexes = Walk::compile(self.tokens.iter());
+        let regexes = Walk::compile(self.tokenized.tokens().iter());
         Walk {
             regex: Cow::Borrowed(&self.regex),
             regexes,
@@ -875,6 +848,12 @@ pub const fn is_meta_character(x: char) -> bool {
 /// as hyphens `-` in character class expressions.
 pub const fn is_contextual_meta_character(x: char) -> bool {
     matches!(x, '-')
+}
+
+fn parse_and_check(expression: &str) -> Result<Tokenized, GlobError> {
+    let tokenized = token::parse(expression)?;
+    rule::check(&tokenized)?;
+    Ok(tokenized)
 }
 
 // TODO: Construct paths from components in tests. In practice, using string
