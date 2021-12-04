@@ -14,8 +14,10 @@ mod supreme {
 }
 
 use itertools::Itertools as _;
-#[cfg(feature = "diagnostics")]
-use miette::{self, Diagnostic, LabeledSpan, SourceCode, SourceSpan};
+#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
+use miette::SourceSpan;
+#[cfg(feature = "diagnostics-error")]
+use miette::{self, Diagnostic, LabeledSpan, SourceCode};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::cmp;
@@ -27,15 +29,18 @@ use std::str::FromStr;
 use supreme::{BaseErrorKind, StackContext};
 use thiserror::Error;
 
-#[cfg(feature = "diagnostics")]
+#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
 use crate::fragment;
 use crate::fragment::{Locate, Stateful};
 use crate::rule;
 use crate::{GlobError, SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
-#[cfg(feature = "diagnostics")]
+#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
 pub type Annotation = SourceSpan;
-#[cfg(not(feature = "diagnostics"))]
+#[cfg(all(
+    not(feature = "diagnostics-error"),
+    not(feature = "diagnostics-metadata")
+))]
 pub type Annotation = ();
 
 type Expression<'i> = Locate<'i, str>;
@@ -58,7 +63,7 @@ impl<'e, 'i> From<TreeEntry<'e, Input<'i>>> for ErrorLocation {
     }
 }
 
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "diagnostics-error")]
 impl From<ErrorLocation> for LabeledSpan {
     fn from(location: ErrorLocation) -> Self {
         let ErrorLocation { offset, context } = location;
@@ -218,7 +223,7 @@ impl<'t> ParseError<'t> {
     }
 }
 
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "diagnostics-error")]
 impl<'t> Diagnostic for ParseError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
         Some(Box::new("glob::parse"))
@@ -277,7 +282,7 @@ enum FlagToggle {
 }
 
 #[derive(Clone, Debug)]
-pub struct Token<'t, A = ()> {
+pub struct Token<'t, A = Annotation> {
     kind: TokenKind<'t, A>,
     annotation: A,
 }
@@ -295,7 +300,7 @@ impl<'t, A> Token<'t, A> {
         }
     }
 
-    #[cfg(feature = "diagnostics")]
+    // TODO: Remove this if it proves unnecessary.
     pub fn unannotate(self) -> Token<'t, ()> {
         let Token { kind, .. } = self;
         Token {
@@ -411,7 +416,7 @@ impl<'t, A> TokenKind<'t, A> {
         }
     }
 
-    #[cfg(feature = "diagnostics")]
+    // TODO: Remove this if it proves unnecessary.
     pub fn unannotate(self) -> TokenKind<'t, ()> {
         match self {
             TokenKind::Alternative(alternative) => alternative.unannotate().into(),
@@ -460,6 +465,16 @@ impl<'t, A> TokenKind<'t, A> {
             TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { .. })
         )
     }
+
+    #[cfg_attr(not(feature = "diagnostics-metadata"), allow(unused))]
+    pub fn is_capturing(&self) -> bool {
+        use TokenKind::{Alternative, Class, Repetition, Wildcard};
+
+        matches!(
+            self,
+            Alternative(_) | Class(_) | Repetition(_) | Wildcard(_),
+        )
+    }
 }
 
 impl<'t, A> From<Alternative<'t, A>> for TokenKind<'t, A> {
@@ -499,7 +514,7 @@ impl<'t, A> Alternative<'t, A> {
         )
     }
 
-    #[cfg(feature = "diagnostics")]
+    // TODO: Remove this if it proves unnecessary.
     pub fn unannotate(self) -> Alternative<'t, ()> {
         Alternative(
             self.0
@@ -689,7 +704,7 @@ impl<'t, A> Repetition<'t, A> {
         }
     }
 
-    #[cfg(feature = "diagnostics")]
+    // TODO: Remove this if it proves unnecessary.
     pub fn unannotate(self) -> Repetition<'t, ()> {
         let Repetition {
             tokens,
@@ -771,6 +786,16 @@ impl<'t> LiteralSequence<'t> {
                 .join("")
                 .into()
         }
+    }
+
+    #[cfg(any(unix, windows))]
+    pub fn is_semantic_literal(&self) -> bool {
+        matches!(self.text().as_ref(), "." | "..")
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    pub fn is_semantic_literal(&self) -> bool {
+        false
     }
 }
 
@@ -1192,7 +1217,7 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
     fn glob<'i>(
         terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorTree<'i>>,
     ) -> impl Parser<Input<'i>, Vec<Token<'i, Annotation>>, ErrorTree<'i>> {
-        #[cfg(feature = "diagnostics")]
+        #[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
         fn annotate<'i, F>(
             parser: F,
         ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
@@ -1204,7 +1229,10 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
             })
         }
 
-        #[cfg(not(feature = "diagnostics"))]
+        #[cfg(all(
+            not(feature = "diagnostics-error"),
+            not(feature = "diagnostics-metadata")
+        ))]
         fn annotate<'i, F>(
             parser: F,
         ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
@@ -1254,17 +1282,7 @@ pub fn parse(expression: &str) -> Result<Vec<Token>, GlobError> {
         while let Some(TokenKind::Separator) = tokens.last().map(Token::kind) {
             tokens.pop();
         }
-        #[cfg(feature = "diagnostics")]
-        {
-            // TODO: Token sequences tend to be small (tens of tokens). It may
-            //       not be worth the additional allocation and moves to drop
-            //       annotations.
-            Ok(tokens.into_iter().map(Token::unannotate).collect())
-        }
-        #[cfg(not(feature = "diagnostics"))]
-        {
-            Ok(tokens)
-        }
+        Ok(tokens)
     }
 }
 

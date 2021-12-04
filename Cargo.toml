@@ -19,7 +19,15 @@ categories = [
 
 [features]
 default = []
-diagnostics = ["miette"]
+# Enables all diagnostics features.
+diagnostics = [
+    "diagnostics-error",
+    "diagnostics-metadata"
+]
+# Integrates with `miette` and provides `Diagnostic` error types and APIs.
+diagnostics-error = ["miette"]
+# Integrates with `miette` and provides metadata functions for inspecting globs.
+diagnostics-metadata = ["miette"]
 
 [dependencies]
 bstr = "^0.2.0"

@@ -1,7 +1,12 @@
-#![cfg(feature = "diagnostics")]
+#![cfg(feature = "diagnostics-error")]
 
-use miette::{LabeledSpan, SourceSpan};
+use itertools::Itertools as _;
+use miette::{Diagnostic, LabeledSpan, SourceSpan};
+use std::borrow::Cow;
 use std::cmp;
+use thiserror::Error;
+
+use crate::token::{self, Annotation, Token};
 
 pub trait SourceSpanExt {
     fn union(&self, other: &SourceSpan) -> SourceSpan;
@@ -99,4 +104,39 @@ impl From<SourceSpan> for CorrelatedSourceSpan {
     fn from(span: SourceSpan) -> Self {
         CorrelatedSourceSpan::Contiguous(span)
     }
+}
+
+#[derive(Clone, Debug, Diagnostic, Error)]
+#[diagnostic(code(glob::semantic_literal), severity(warning))]
+#[error("\"{literal}\" has been interpreted as a literal with no semantics")]
+pub struct SemanticLiteralWarning<'t> {
+    #[source_code]
+    expression: Cow<'t, str>,
+    literal: Cow<'t, str>,
+    #[label("here")]
+    span: SourceSpan,
+}
+
+pub fn diagnostics<'t, I>(expression: &Cow<'t, str>, tokens: I) -> Vec<Box<dyn Diagnostic + 't>>
+where
+    I: IntoIterator<Item = &'t Token<'t, Annotation>>,
+    I::IntoIter: 't + Clone,
+{
+    token::components(tokens)
+        .flat_map(|component| component.literal().map(|literal| (component, literal)))
+        .filter(|(_, literal)| literal.is_semantic_literal())
+        .map(|(component, literal)| {
+            Box::new(SemanticLiteralWarning {
+                expression: expression.clone(),
+                literal: literal.text().clone(),
+                span: component
+                    .tokens()
+                    .iter()
+                    .map(|token| token.annotation())
+                    .cloned()
+                    .fold1(|left, right| left.union(&right))
+                    .expect("no tokens in component"),
+            }) as Box<dyn Diagnostic>
+        })
+        .collect()
 }

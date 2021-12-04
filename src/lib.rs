@@ -10,15 +10,15 @@
 )]
 
 mod capture;
+mod diagnostics;
 mod encode;
 mod fragment;
 mod rule;
-mod span;
 mod token;
 
 use bstr::ByteVec;
 use itertools::{Itertools as _, Position};
-#[cfg(feature = "diagnostics")]
+#[cfg(feature = "diagnostics-error")]
 use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
@@ -35,6 +35,10 @@ use walkdir::{self, DirEntry, WalkDir};
 
 pub use walkdir::Error as WalkError;
 
+#[cfg(feature = "diagnostics-error")]
+use crate::diagnostics::error;
+#[cfg(feature = "diagnostics-metadata")]
+use crate::diagnostics::metadata::{self, CapturingToken};
 use crate::token::Token;
 
 pub use crate::capture::Captures;
@@ -259,16 +263,16 @@ impl<T> Terminals<T> {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-#[cfg_attr(feature = "diagnostics", derive(Diagnostic))]
+#[cfg_attr(feature = "diagnostics-error", derive(Diagnostic))]
 pub enum GlobError<'t> {
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+    #[cfg_attr(feature = "diagnostics-error", diagnostic(transparent))]
     Parse(ParseError<'t>),
     #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics", diagnostic(transparent))]
+    #[cfg_attr(feature = "diagnostics-error", diagnostic(transparent))]
     Rule(RuleError<'t>),
     #[error("failed to walk directory tree: {0}")]
-    #[cfg_attr(feature = "diagnostics", diagnostic(code = "glob::walk"))]
+    #[cfg_attr(feature = "diagnostics-error", diagnostic(code = "glob::walk"))]
     Walk(WalkError),
 }
 
@@ -358,6 +362,8 @@ impl<'b> From<&'b str> for EncodedPath<'b> {
 pub struct Glob<'t> {
     tokens: Vec<Token<'t>>,
     regex: Regex,
+    #[cfg(feature = "diagnostics-error")]
+    expression: Cow<'t, str>,
 }
 
 impl<'t> Glob<'t> {
@@ -371,7 +377,12 @@ impl<'t> Glob<'t> {
     pub fn new(expression: &'t str) -> Result<Self, GlobError<'t>> {
         let tokens = token::parse(expression)?;
         let regex = Glob::compile(tokens.iter());
-        Ok(Glob { tokens, regex })
+        Ok(Glob {
+            tokens,
+            regex,
+            #[cfg(feature = "diagnostics-error")]
+            expression: expression.into(),
+        })
     }
 
     /// Partitions a glob expression into an invariant `PathBuf` prefix and
@@ -465,13 +476,31 @@ impl<'t> Glob<'t> {
         tokens.first_mut().map(Token::unroot);
 
         let regex = Glob::compile(tokens.iter());
-        Ok((prefix, Glob { tokens, regex }))
+        Ok((
+            prefix,
+            Glob {
+                tokens,
+                regex,
+                #[cfg(feature = "diagnostics-error")]
+                expression: expression.into(),
+            },
+        ))
     }
 
     pub fn into_owned(self) -> Glob<'static> {
-        let Glob { tokens, regex } = self;
+        let Glob {
+            tokens,
+            regex,
+            #[cfg(feature = "diagnostics-error")]
+            expression,
+        } = self;
         let tokens = tokens.into_iter().map(|token| token.into_owned()).collect();
-        Glob { tokens, regex }
+        Glob {
+            tokens,
+            regex,
+            #[cfg(feature = "diagnostics-error")]
+            expression: expression.into_owned().into(),
+        }
     }
 
     pub fn is_invariant(&self) -> bool {
@@ -488,19 +517,13 @@ impl<'t> Glob<'t> {
             .unwrap_or(false)
     }
 
-    #[cfg(any(unix, windows))]
     pub fn has_semantic_literals(&self) -> bool {
         token::components(self.tokens.iter()).any(|component| {
             component
                 .literal()
-                .map(|literal| matches!(literal.text().as_ref(), "." | ".."))
+                .map(|literal| literal.is_semantic_literal())
                 .unwrap_or(false)
         })
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    pub fn has_semantic_literals(&self) -> bool {
-        false
     }
 
     pub fn is_match<'p>(&self, path: impl Into<EncodedPath<'p>>) -> bool {
@@ -510,6 +533,16 @@ impl<'t> Glob<'t> {
 
     pub fn captures<'p>(&self, path: &'p EncodedPath<'_>) -> Option<Captures<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
+    }
+
+    #[cfg(feature = "diagnostics-error")]
+    pub fn diagnostics(&self) -> Vec<Box<dyn Diagnostic + '_>> {
+        error::diagnostics(&self.expression, self.tokens.iter())
+    }
+
+    #[cfg(feature = "diagnostics-metadata")]
+    pub fn metacaptures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
+        metadata::captures(self.tokens.iter())
     }
 
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
