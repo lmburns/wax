@@ -149,7 +149,7 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
                 #[cfg(feature = "diagnostics-report")]
                 span: CorrelatedSourceSpan::split_some(
                     outer.map(Token::annotation).cloned().map(From::from),
-                    inner.annotation().clone().into(),
+                    (*inner.annotation()).into(),
                 ),
             }
         }
@@ -210,7 +210,9 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
 
     #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
     fn diagnose<'t, 'i>(
-        expression: &'i Cow<'t, str>,
+        // This is a somewhat unusual API, but it allows the lifetime `'t` of
+        // the `Cow` to be properly forwarded to output values (`RuleError`).
+        #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
         token: &'i Token<'t, Annotation>,
         label: &'static str,
     ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
@@ -236,7 +238,9 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
     }
 
     fn recurse<'t, 'i, I>(
-        expression: &Cow<'t, str>,
+        // This is a somewhat unusual API, but it allows the lifetime `'t` of
+        // the `Cow` to be properly forwarded to output values (`RuleError`).
+        #[allow(clippy::ptr_arg)] expression: &Cow<'t, str>,
         tokens: I,
         outer: Outer<'t, 'i>,
     ) -> Result<(), RuleError<'t>>

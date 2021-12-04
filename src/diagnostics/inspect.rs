@@ -30,6 +30,6 @@ where
         .enumerate()
         .map(|(index, token)| CapturingToken {
             index,
-            span: token.annotation().clone(),
+            span: *token.annotation(),
         })
 }

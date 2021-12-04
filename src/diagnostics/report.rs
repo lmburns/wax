@@ -150,7 +150,7 @@ pub fn diagnostics<'t>(tokenized: &'t Tokenized<'t, Annotation>) -> Vec<Box<dyn 
             matches!(token.kind(), TokenKind::Separator).then(|| {
                 Box::new(TerminatingSeparatorWarning {
                     expression: tokenized.expression().clone(),
-                    span: token.annotation().clone().into(),
+                    span: (*token.annotation()).into(),
                 }) as Box<dyn Diagnostic>
             })
         }))
