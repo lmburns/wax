@@ -463,7 +463,6 @@ impl<'t> Glob<'t> {
     /// prefix can be used to interact with native paths as needed for a given
     /// application.
     pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
-        // Get the invariant prefix for the token sequence.
         let mut tokenized = parse_and_check(expression)?;
         let prefix = tokenized.partition();
         let regex = Glob::compile(tokenized.tokens().iter());
@@ -503,6 +502,16 @@ impl<'t> Glob<'t> {
         })
     }
 
+    #[cfg(feature = "diagnostics-report")]
+    pub fn diagnostics(&self) -> Vec<Box<dyn Diagnostic + '_>> {
+        report::diagnostics(&self.tokenized)
+    }
+
+    #[cfg(feature = "diagnostics-inspect")]
+    pub fn capturing_expression_tokens(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
+        inspect::captures(self.tokenized.tokens().iter())
+    }
+
     pub fn is_match<'p>(&self, path: impl Into<EncodedPath<'p>>) -> bool {
         let path = path.into();
         self.regex.is_match(path.as_ref())
@@ -510,16 +519,6 @@ impl<'t> Glob<'t> {
 
     pub fn captures<'p>(&self, path: &'p EncodedPath<'_>) -> Option<Captures<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
-    }
-
-    #[cfg(feature = "diagnostics-report")]
-    pub fn diagnostics(&self) -> Vec<Box<dyn Diagnostic + '_>> {
-        report::diagnostics(&self.tokenized)
-    }
-
-    #[cfg(feature = "diagnostics-inspect")]
-    pub fn metacaptures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
-        inspect::captures(self.tokenized.tokens().iter())
     }
 
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
