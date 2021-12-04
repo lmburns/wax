@@ -336,15 +336,6 @@ impl<'t, A> Token<'t, A> {
         }
     }
 
-    // TODO: Remove this if it proves unnecessary.
-    pub fn unannotate(self) -> Token<'t, ()> {
-        let Token { kind, .. } = self;
-        Token {
-            kind: kind.unannotate(),
-            annotation: (),
-        }
-    }
-
     pub fn unroot(&mut self) -> bool {
         self.kind.unroot()
     }
@@ -452,24 +443,6 @@ impl<'t, A> TokenKind<'t, A> {
         }
     }
 
-    // TODO: Remove this if it proves unnecessary.
-    pub fn unannotate(self) -> TokenKind<'t, ()> {
-        match self {
-            TokenKind::Alternative(alternative) => alternative.unannotate().into(),
-            TokenKind::Class(class) => TokenKind::Class(class),
-            TokenKind::Literal(Literal {
-                text,
-                is_case_insensitive,
-            }) => TokenKind::Literal(Literal {
-                text,
-                is_case_insensitive,
-            }),
-            TokenKind::Repetition(repetition) => repetition.unannotate().into(),
-            TokenKind::Separator => TokenKind::Separator,
-            TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
-        }
-    }
-
     pub fn unroot(&mut self) -> bool {
         match self {
             TokenKind::Wildcard(Wildcard::Tree { ref mut is_rooted }) => {
@@ -546,16 +519,6 @@ impl<'t, A> Alternative<'t, A> {
             self.0
                 .into_iter()
                 .map(|tokens| tokens.into_iter().map(Token::into_owned).collect())
-                .collect(),
-        )
-    }
-
-    // TODO: Remove this if it proves unnecessary.
-    pub fn unannotate(self) -> Alternative<'t, ()> {
-        Alternative(
-            self.0
-                .into_iter()
-                .map(|tokens| tokens.into_iter().map(Token::unannotate).collect())
                 .collect(),
         )
     }
@@ -735,20 +698,6 @@ impl<'t, A> Repetition<'t, A> {
         } = self;
         Repetition {
             tokens: tokens.into_iter().map(Token::into_owned).collect(),
-            lower,
-            step,
-        }
-    }
-
-    // TODO: Remove this if it proves unnecessary.
-    pub fn unannotate(self) -> Repetition<'t, ()> {
-        let Repetition {
-            tokens,
-            lower,
-            step,
-        } = self;
-        Repetition {
-            tokens: tokens.into_iter().map(Token::unannotate).collect(),
             lower,
             step,
         }
