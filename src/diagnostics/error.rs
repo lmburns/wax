@@ -128,8 +128,7 @@ pub fn diagnostics<'t>(tokenized: &'t Tokenized<'t, Annotation>) -> Vec<Box<dyn 
                 span: component
                     .tokens()
                     .iter()
-                    .map(|token| token.annotation())
-                    .cloned()
+                    .map(|token| SourceSpan::from(*token.annotation()))
                     .fold1(|left, right| left.union(&right))
                     .expect("no tokens in component"),
             }) as Box<dyn Diagnostic>

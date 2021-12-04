@@ -11,7 +11,7 @@
 
 use itertools::Itertools as _;
 #[cfg(feature = "diagnostics-error")]
-use miette::{Diagnostic, LabeledSpan, SourceCode};
+use miette::{Diagnostic, LabeledSpan, SourceCode, SourceSpan};
 use std::borrow::Cow;
 #[cfg(feature = "diagnostics-error")]
 use std::fmt::Display;
@@ -109,13 +109,16 @@ fn boundary<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'
         .iter()
         .tuple_windows::<(_, _)>()
         .find(|(left, right)| left.is_component_boundary() && right.is_component_boundary())
-        .map(|(left, right)| (left.annotation(), right.annotation()))
+        .map(|(left, right)| (*left.annotation(), *right.annotation()))
     {
         Err(RuleError::new(
             tokenized.expression().clone(),
             ErrorKind::AdjacentBoundary,
             #[cfg(feature = "diagnostics-error")]
-            CompositeSourceSpan::span(Some("here"), left.union(right)),
+            CompositeSourceSpan::span(
+                Some("here"),
+                SourceSpan::from(left).union(&SourceSpan::from(right)),
+            ),
         ))
     }
     else {
@@ -145,8 +148,8 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
                 kind,
                 #[cfg(feature = "diagnostics-error")]
                 span: CorrelatedSourceSpan::split_some(
-                    outer.map(Token::annotation).cloned(),
-                    inner.annotation().clone(),
+                    outer.map(Token::annotation).cloned().map(From::from),
+                    inner.annotation().clone().into(),
                 ),
             }
         }
@@ -223,7 +226,11 @@ fn group<'t>(tokenized: &Tokenized<'t, Annotation>) -> Result<(), RuleError<'t>>
                 expression.clone(),
                 kind,
                 #[cfg(feature = "diagnostics-error")]
-                CompositeSourceSpan::correlated(Some(label), token.annotation().clone(), span),
+                CompositeSourceSpan::correlated(
+                    Some(label),
+                    SourceSpan::from(*token.annotation()),
+                    span,
+                ),
             )
         }
     }

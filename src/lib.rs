@@ -37,11 +37,15 @@ pub use walkdir::Error as WalkError;
 
 #[cfg(feature = "diagnostics-error")]
 use crate::diagnostics::error;
-#[cfg(feature = "diagnostics-metadata")]
-use crate::diagnostics::metadata::{self, CapturingToken};
+#[cfg(feature = "diagnostics-inspect")]
+use crate::diagnostics::inspect;
 use crate::token::{Token, Tokenized};
 
 pub use crate::capture::Captures;
+#[cfg(feature = "diagnostics-inspect")]
+pub use crate::diagnostics::inspect::CapturingToken;
+#[cfg(feature = "diagnostics-inspect")]
+pub use crate::diagnostics::Span;
 pub use crate::rule::RuleError;
 pub use crate::token::ParseError;
 
@@ -513,9 +517,9 @@ impl<'t> Glob<'t> {
         error::diagnostics(&self.tokenized)
     }
 
-    #[cfg(feature = "diagnostics-metadata")]
+    #[cfg(feature = "diagnostics-inspect")]
     pub fn metacaptures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
-        metadata::captures(self.tokenized.tokens().iter())
+        inspect::captures(self.tokenized.tokens().iter())
     }
 
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {

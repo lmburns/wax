@@ -22,12 +22,12 @@ default = []
 # Enables all diagnostics features.
 diagnostics = [
     "diagnostics-error",
-    "diagnostics-metadata"
+    "diagnostics-inspect"
 ]
 # Integrates with `miette` and provides `Diagnostic` error types and APIs.
 diagnostics-error = ["miette"]
-# Integrates with `miette` and provides metadata functions for inspecting globs.
-diagnostics-metadata = ["miette"]
+# Provides glob metadata through inspection APIs.
+diagnostics-inspect = []
 
 [dependencies]
 bstr = "^0.2.0"

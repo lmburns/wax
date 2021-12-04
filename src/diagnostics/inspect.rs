@@ -1,13 +1,12 @@
-#![cfg(feature = "diagnostics-metadata")]
+#![cfg(feature = "diagnostics-inspect")]
 
-use miette::SourceSpan;
-
+use crate::diagnostics::Span;
 use crate::token::{Annotation, Token};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct CapturingToken {
     index: usize,
-    span: SourceSpan,
+    span: Span,
 }
 
 impl CapturingToken {
@@ -15,8 +14,8 @@ impl CapturingToken {
         self.index
     }
 
-    pub fn span(&self) -> SourceSpan {
-        self.span.clone()
+    pub fn span(&self) -> Span {
+        self.span
     }
 }
 

@@ -14,8 +14,6 @@ mod supreme {
 }
 
 use itertools::Itertools as _;
-#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
-use miette::SourceSpan;
 #[cfg(feature = "diagnostics-error")]
 use miette::{self, Diagnostic, LabeledSpan, SourceCode};
 use smallvec::{smallvec, SmallVec};
@@ -29,16 +27,18 @@ use std::str::FromStr;
 use supreme::{BaseErrorKind, StackContext};
 use thiserror::Error;
 
-#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
+#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-inspect"))]
+use crate::diagnostics::Span;
+#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-inspect"))]
 use crate::fragment;
 use crate::fragment::{Locate, Stateful};
 use crate::{SliceExt as _, StrExt as _, Terminals, PATHS_ARE_CASE_INSENSITIVE};
 
-#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
-pub type Annotation = SourceSpan;
+#[cfg(any(feature = "diagnostics-error", feature = "diagnostics-inspect"))]
+pub type Annotation = Span;
 #[cfg(all(
     not(feature = "diagnostics-error"),
-    not(feature = "diagnostics-metadata")
+    not(feature = "diagnostics-inspect")
 ))]
 pub type Annotation = ();
 
@@ -502,7 +502,7 @@ impl<'t, A> TokenKind<'t, A> {
         )
     }
 
-    #[cfg_attr(not(feature = "diagnostics-metadata"), allow(unused))]
+    #[cfg_attr(not(feature = "diagnostics-inspect"), allow(unused))]
     pub fn is_capturing(&self) -> bool {
         use TokenKind::{Alternative, Class, Repetition, Wildcard};
 
@@ -1253,7 +1253,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     fn glob<'i>(
         terminator: impl 'i + Clone + Parser<Input<'i>, Input<'i>, ErrorTree<'i>>,
     ) -> impl Parser<Input<'i>, Vec<Token<'i, Annotation>>, ErrorTree<'i>> {
-        #[cfg(any(feature = "diagnostics-error", feature = "diagnostics-metadata"))]
+        #[cfg(any(feature = "diagnostics-error", feature = "diagnostics-inspect"))]
         fn annotate<'i, F>(
             parser: F,
         ) -> impl FnMut(Input<'i>) -> ParseResult<'i, Token<'i, Annotation>>
@@ -1261,13 +1261,13 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
             F: 'i + Parser<Input<'i>, TokenKind<'i, Annotation>, ErrorTree<'i>>,
         {
             combinator::map(fragment::span(parser), |(span, kind)| {
-                Token::new(kind, span.into())
+                Token::new(kind, span)
             })
         }
 
         #[cfg(all(
             not(feature = "diagnostics-error"),
-            not(feature = "diagnostics-metadata")
+            not(feature = "diagnostics-inspect")
         ))]
         fn annotate<'i, F>(
             parser: F,
