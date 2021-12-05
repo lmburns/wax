@@ -3,6 +3,7 @@
 use crate::diagnostics::Span;
 use crate::token::Token;
 
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
 #[derive(Clone, Copy, Debug)]
 pub struct CapturingToken {
     index: usize,

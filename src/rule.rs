@@ -66,6 +66,7 @@ impl<'t> RuleError<'t> {
 }
 
 #[cfg(feature = "diagnostics-report")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 impl<'t> Diagnostic for RuleError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         Some(Box::new(String::from("glob::rule")))

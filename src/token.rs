@@ -223,6 +223,7 @@ impl<'t> ParseError<'t> {
 }
 
 #[cfg(feature = "diagnostics-report")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 impl<'t> Diagnostic for ParseError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
         Some(Box::new("glob::parse"))
@@ -1262,14 +1263,6 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
         let tokens = combinator::all_consuming(glob(combinator::eof))(input)
             .map(|(_, tokens)| tokens)
             .map_err(|error| ParseError::new(expression, error))?;
-        // TODO: This is a problem if rules are checked after altering the token
-        //       sequence.
-        // Remove any trailing separator tokens. Such separators are meaningless
-        // and are typically normalized in paths by removing them or ignoring
-        // them in nominal comparisons.
-        //while let Some(TokenKind::Separator) = tokens.last().map(Token::kind) {
-        //    tokens.pop();
-        //}
         Ok(Tokenized {
             expression: expression.into(),
             tokens,

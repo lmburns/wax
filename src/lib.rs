@@ -8,6 +8,7 @@
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/olson-sean-k/wax/master/doc/wax.svg?sanitize=true"
 )]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod capture;
 mod diagnostics;
@@ -503,11 +504,13 @@ impl<'t> Glob<'t> {
     }
 
     #[cfg(feature = "diagnostics-report")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
     pub fn diagnostics(&self) -> Vec<Box<dyn Diagnostic + '_>> {
         report::diagnostics(&self.tokenized)
     }
 
     #[cfg(feature = "diagnostics-inspect")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
     pub fn capturing_expression_tokens(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
         inspect::captures(self.tokenized.tokens().iter())
     }
