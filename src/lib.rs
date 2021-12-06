@@ -478,47 +478,6 @@ impl<'t> Glob<'t> {
         }
     }
 
-    pub fn is_invariant(&self) -> bool {
-        // TODO: This may be expensive.
-        self.tokenized
-            .tokens()
-            .iter()
-            .all(|token| token.to_invariant_string().is_some())
-    }
-
-    pub fn has_root(&self) -> bool {
-        self.tokenized
-            .tokens()
-            .first()
-            .map(|token| token.is_rooted())
-            .unwrap_or(false)
-    }
-
-    pub fn has_semantic_literals(&self) -> bool {
-        token::components(self.tokenized.tokens().iter()).any(|component| {
-            component
-                .literal()
-                .map(|literal| literal.is_semantic_literal())
-                .unwrap_or(false)
-        })
-    }
-
-    // Because these non-error diagnostics are queried after glob construction,
-    // it is not possible for client code to surface error and non-error
-    // diagnostics together. Instead, diagnostics are either errors or they are
-    // non-errors.
-    #[cfg(feature = "diagnostics-report")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-    pub fn diagnostics(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
-        report::diagnostics(&self.tokenized)
-    }
-
-    #[cfg(feature = "diagnostics-inspect")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
-    pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
-        inspect::captures(self.tokenized.tokens().iter())
-    }
-
     pub fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
         self.regex.is_match(path.as_ref())
@@ -568,6 +527,47 @@ impl<'t> Glob<'t> {
                 .max_depth(depth)
                 .into_iter(),
         }
+    }
+
+    // Because these non-error diagnostics are queried after glob construction,
+    // it is not possible for client code to surface error and non-error
+    // diagnostics together. Instead, diagnostics are either errors or they are
+    // non-errors.
+    #[cfg(feature = "diagnostics-report")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+    pub fn diagnostics(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
+        report::diagnostics(&self.tokenized)
+    }
+
+    #[cfg(feature = "diagnostics-inspect")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
+    pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
+        inspect::captures(self.tokenized.tokens().iter())
+    }
+
+    pub fn is_invariant(&self) -> bool {
+        // TODO: This may be expensive.
+        self.tokenized
+            .tokens()
+            .iter()
+            .all(|token| token.to_invariant_string().is_some())
+    }
+
+    pub fn has_root(&self) -> bool {
+        self.tokenized
+            .tokens()
+            .first()
+            .map(|token| token.is_rooted())
+            .unwrap_or(false)
+    }
+
+    pub fn has_semantic_literals(&self) -> bool {
+        token::components(self.tokenized.tokens().iter()).any(|component| {
+            component
+                .literal()
+                .map(|literal| literal.is_semantic_literal())
+                .unwrap_or(false)
+        })
     }
 }
 

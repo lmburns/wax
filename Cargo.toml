@@ -13,18 +13,17 @@ keywords = [
     "pattern",
     "regex"
 ]
-categories = [
-    "filesystem"
-]
+categories = ["filesystem"]
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = [
-    "--cfg", "docsrs"
+    "--cfg",
+    "docsrs"
 ]
 
 [features]
-default = []
+default = ["diagnostics-inspect"]
 # Enables all diagnostics features.
 diagnostics = [
     "diagnostics-inspect",

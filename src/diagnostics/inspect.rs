@@ -1,5 +1,9 @@
 #![cfg(feature = "diagnostics-inspect")]
 
+// TODO: The `diagnostics-inspect` feature is currently trivial and relies
+//       entirely on existing code (there are no additional dependencies).
+//       Consider removing it (and collapsing the diagnostics features).
+
 use crate::diagnostics::Span;
 use crate::token::Token;
 
