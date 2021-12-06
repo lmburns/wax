@@ -127,7 +127,9 @@ pub struct TerminatingSeparatorWarning<'t> {
     span: SourceSpan,
 }
 
-pub fn diagnostics<'t>(tokenized: &'t Tokenized<'t>) -> Vec<Box<dyn Diagnostic + 't>> {
+pub fn diagnostics<'t>(
+    tokenized: &'t Tokenized<'t>,
+) -> impl Iterator<Item = Box<dyn Diagnostic + 't>> {
     None.into_iter()
         .chain(
             token::components(tokenized.tokens().iter())
@@ -154,5 +156,38 @@ pub fn diagnostics<'t>(tokenized: &'t Tokenized<'t>) -> Vec<Box<dyn Diagnostic +
                 }) as Box<dyn Diagnostic>
             })
         }))
-        .collect()
+}
+
+// These tests use `Glob` APIs, which simply wrap functions in this module.
+#[cfg(test)]
+mod tests {
+    use crate::Glob;
+
+    // It is non-trivial to downcast `&dyn Diagnostic`, so diagnostics are
+    // identified in tests by code.
+    const CODE_SEMANTIC_LITERAL: &str = "glob::semantic_literal";
+    const CODE_TERMINATING_SEPARATOR: &str = "glob::terminating_separator";
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn report_semantic_literal_warning() {
+        let glob = Glob::new("../foo").unwrap();
+        let diagnostics: Vec<_> = glob.diagnostics().collect();
+
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic
+            .code()
+            .map(|code| code.to_string() == CODE_SEMANTIC_LITERAL)
+            .unwrap_or(false)));
+    }
+
+    #[test]
+    fn report_terminating_separator_warning() {
+        let glob = Glob::new("**/foo/").unwrap();
+        let diagnostics: Vec<_> = glob.diagnostics().collect();
+
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic
+            .code()
+            .map(|code| code.to_string() == CODE_TERMINATING_SEPARATOR)
+            .unwrap_or(false)));
+    }
 }

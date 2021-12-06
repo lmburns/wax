@@ -30,7 +30,27 @@ where
         .filter(|token| token.is_capturing())
         .enumerate()
         .map(|(index, token)| CapturingToken {
-            index,
+            index: index + 1,
             span: *token.annotation(),
         })
+}
+
+// These tests use `Glob` APIs, which simply wrap functions in this module.
+#[cfg(test)]
+mod tests {
+    use crate::Glob;
+
+    #[test]
+    fn inspect_capture_indices() {
+        let glob = Glob::new("**/{foo*,bar*}/???").unwrap();
+        let indices: Vec<_> = glob.captures().map(|token| token.index()).collect();
+        assert_eq!(&indices, &[1, 2, 3, 4, 5,]);
+    }
+
+    #[test]
+    fn inspect_capture_spans() {
+        let glob = Glob::new("**/{foo*,bar*}/$").unwrap();
+        let spans: Vec<_> = glob.captures().map(|token| token.span()).collect();
+        assert_eq!(&spans, &[(0, 3), (3, 11), (15, 1),]);
+    }
 }

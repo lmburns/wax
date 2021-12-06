@@ -509,7 +509,7 @@ impl<'t> Glob<'t> {
     // non-errors.
     #[cfg(feature = "diagnostics-report")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-    pub fn diagnostics(&self) -> Vec<Box<dyn Diagnostic + '_>> {
+    pub fn diagnostics(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
         report::diagnostics(&self.tokenized)
     }
 
