@@ -42,7 +42,7 @@ use crate::diagnostics::inspect;
 use crate::diagnostics::report;
 use crate::token::{Token, Tokenized};
 
-pub use crate::capture::Captures;
+pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::inspect::CapturingToken;
 #[cfg(feature = "diagnostics-inspect")]
@@ -310,39 +310,39 @@ impl<'t> From<RuleError<'t>> for GlobError<'t> {
 }
 
 #[derive(Clone)]
-pub struct EncodedPath<'b> {
+pub struct CandidatePath<'b> {
     text: Cow<'b, str>,
 }
 
-impl<'b> EncodedPath<'b> {
-    pub fn into_owned(self) -> EncodedPath<'static> {
-        EncodedPath {
+impl<'b> CandidatePath<'b> {
+    pub fn into_owned(self) -> CandidatePath<'static> {
+        CandidatePath {
             text: self.text.into_owned().into(),
         }
     }
 }
 
-impl<'b> AsRef<str> for EncodedPath<'b> {
+impl<'b> AsRef<str> for CandidatePath<'b> {
     fn as_ref(&self) -> &str {
         self.text.as_ref()
     }
 }
 
-impl<'b> Debug for EncodedPath<'b> {
+impl<'b> Debug for CandidatePath<'b> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.text)
     }
 }
 
-impl<'b> Display for EncodedPath<'b> {
+impl<'b> Display for CandidatePath<'b> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.text)
     }
 }
 
-impl<'b> From<&'b OsStr> for EncodedPath<'b> {
+impl<'b> From<&'b OsStr> for CandidatePath<'b> {
     fn from(text: &'b OsStr) -> Self {
-        EncodedPath {
+        CandidatePath {
             text: match Vec::from_os_str_lossy(text) {
                 Cow::Borrowed(bytes) => str::from_utf8(bytes).expect_encoding().into(),
                 Cow::Owned(bytes) => String::from_utf8(bytes).expect_encoding().into(),
@@ -351,15 +351,15 @@ impl<'b> From<&'b OsStr> for EncodedPath<'b> {
     }
 }
 
-impl<'b> From<&'b Path> for EncodedPath<'b> {
+impl<'b> From<&'b Path> for CandidatePath<'b> {
     fn from(path: &'b Path) -> Self {
-        EncodedPath::from(path.as_os_str())
+        CandidatePath::from(path.as_os_str())
     }
 }
 
-impl<'b> From<&'b str> for EncodedPath<'b> {
+impl<'b> From<&'b str> for CandidatePath<'b> {
     fn from(text: &'b str) -> Self {
-        EncodedPath { text: text.into() }
+        CandidatePath { text: text.into() }
     }
 }
 
@@ -503,6 +503,10 @@ impl<'t> Glob<'t> {
         })
     }
 
+    // Because these non-error diagnostics are queried after glob construction,
+    // it is not possible for client code to surface error and non-error
+    // diagnostics together. Instead, diagnostics are either errors or they are
+    // non-errors.
     #[cfg(feature = "diagnostics-report")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
     pub fn diagnostics(&self) -> Vec<Box<dyn Diagnostic + '_>> {
@@ -511,16 +515,16 @@ impl<'t> Glob<'t> {
 
     #[cfg(feature = "diagnostics-inspect")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
-    pub fn capturing_expression_tokens(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
+    pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
         inspect::captures(self.tokenized.tokens().iter())
     }
 
-    pub fn is_match<'p>(&self, path: impl Into<EncodedPath<'p>>) -> bool {
+    pub fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
         self.regex.is_match(path.as_ref())
     }
 
-    pub fn captures<'p>(&self, path: &'p EncodedPath<'_>) -> Option<Captures<'p>> {
+    pub fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 
@@ -621,7 +625,7 @@ macro_rules! walk {
                 .components()
                 .skip(depth)
                 .filter_map(|component| match component {
-                    Component::Normal(component) => Some(EncodedPath::from(component)),
+                    Component::Normal(component) => Some(CandidatePath::from(component)),
                     _ => None,
                 })
                 .zip_longest($state.regexes.iter().skip(depth))
@@ -640,13 +644,13 @@ macro_rules! walk {
                     }
                     (Last(_) | Only(_), Both(component, regex)) => {
                         if regex.is_match(component.as_ref()) {
-                            let path = EncodedPath::from(path);
-                            if let Some(captures) =
-                                $state.regex.captures(path.as_ref()).map(Captures::from)
+                            let path = CandidatePath::from(path);
+                            if let Some(matched) =
+                                $state.regex.captures(path.as_ref()).map(MatchedText::from)
                             {
                                 let $entry = Ok(WalkEntry {
                                     entry: Cow::Borrowed(&entry),
-                                    captures,
+                                    matched,
                                 });
                                 $f
                             }
@@ -660,13 +664,13 @@ macro_rules! walk {
                         }
                     }
                     (_, Left(_component)) => {
-                        let path = EncodedPath::from(path);
-                        if let Some(captures) =
-                            $state.regex.captures(path.as_ref()).map(Captures::from)
+                        let path = CandidatePath::from(path);
+                        if let Some(matched) =
+                            $state.regex.captures(path.as_ref()).map(MatchedText::from)
                         {
                             let $entry = Ok(WalkEntry {
                                 entry: Cow::Borrowed(&entry),
-                                captures,
+                                matched,
                             });
                             $f
                             continue 'walk; // May be unreachable.
@@ -685,15 +689,15 @@ macro_rules! walk {
 #[derive(Debug)]
 pub struct WalkEntry<'e> {
     entry: Cow<'e, DirEntry>,
-    captures: Captures<'e>,
+    matched: MatchedText<'e>,
 }
 
 impl<'e> WalkEntry<'e> {
     pub fn into_owned(self) -> WalkEntry<'static> {
-        let WalkEntry { entry, captures } = self;
+        let WalkEntry { entry, matched } = self;
         WalkEntry {
             entry: Cow::Owned(entry.into_owned()),
-            captures: captures.into_owned(),
+            matched: matched.into_owned(),
         }
     }
 
@@ -708,7 +712,7 @@ impl<'e> WalkEntry<'e> {
         self.entry.path()
     }
 
-    pub fn to_encoded_path(&self) -> EncodedPath<'_> {
+    pub fn to_encoded_path(&self) -> CandidatePath<'_> {
         self.path().into()
     }
 
@@ -724,8 +728,8 @@ impl<'e> WalkEntry<'e> {
         self.entry.depth()
     }
 
-    pub fn captures(&self) -> &Captures<'e> {
-        &self.captures
+    pub fn matched(&self) -> &MatchedText<'e> {
+        &self.matched
     }
 }
 
@@ -800,7 +804,10 @@ impl<'g> Iterator for Walk<'g> {
     }
 }
 
-pub fn is_match<'p>(expression: &str, path: impl Into<EncodedPath<'p>>) -> Result<bool, GlobError> {
+pub fn is_match<'p>(
+    expression: &str,
+    path: impl Into<CandidatePath<'p>>,
+) -> Result<bool, GlobError> {
     let glob = Glob::new(expression)?;
     Ok(glob.is_match(path))
 }
@@ -869,7 +876,7 @@ fn parse_and_check(expression: &str) -> Result<Tokenized, GlobError> {
 mod tests {
     use std::path::Path;
 
-    use crate::{Adjacency, EncodedPath, Glob, IteratorExt as _};
+    use crate::{Adjacency, CandidatePath, Glob, IteratorExt as _};
 
     #[test]
     fn adjacent() {
@@ -1208,9 +1215,9 @@ mod tests {
         // text should always be available.
         assert_eq!(
             "a/b",
-            glob.captures(&EncodedPath::from(Path::new("a/b")))
+            glob.matched(&CandidatePath::from(Path::new("a/b")))
                 .unwrap()
-                .matched(),
+                .complete(),
         );
     }
 
@@ -1227,7 +1234,7 @@ mod tests {
 
         assert_eq!(
             "x/y/z/",
-            glob.captures(&EncodedPath::from(Path::new("a/x/y/z/b")))
+            glob.matched(&CandidatePath::from(Path::new("a/x/y/z/b")))
                 .unwrap()
                 .get(1)
                 .unwrap(),
@@ -1242,10 +1249,10 @@ mod tests {
         assert!(glob.is_match(Path::new("a/file.ext")));
         assert!(glob.is_match(Path::new("a/b/file.ext")));
 
-        let path = EncodedPath::from(Path::new("a/file.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("a/", captures.get(1).unwrap());
-        assert_eq!("file", captures.get(2).unwrap());
+        let path = CandidatePath::from(Path::new("a/file.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("a/", matched.get(1).unwrap());
+        assert_eq!("file", matched.get(2).unwrap());
     }
 
     #[test]
@@ -1255,11 +1262,11 @@ mod tests {
         assert!(glob.is_match(Path::new("prefix-file.ext")));
         assert!(glob.is_match(Path::new("a-b-c.ext")));
 
-        let path = EncodedPath::from(Path::new("a-b-c.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("a", captures.get(1).unwrap());
-        assert_eq!("b-c", captures.get(2).unwrap());
-        assert_eq!("ext", captures.get(3).unwrap());
+        let path = CandidatePath::from(Path::new("a-b-c.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("a", matched.get(1).unwrap());
+        assert_eq!("b-c", matched.get(2).unwrap());
+        assert_eq!("ext", matched.get(3).unwrap());
     }
 
     #[test]
@@ -1272,9 +1279,9 @@ mod tests {
 
         assert!(!glob.is_match(Path::new("a/b/file.ext")));
 
-        let path = EncodedPath::from(Path::new("a/i/file.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("i", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("a/i/file.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("i", matched.get(1).unwrap());
     }
 
     #[test]
@@ -1286,9 +1293,9 @@ mod tests {
 
         assert!(!glob.is_match(Path::new("a/銅/file.ext")));
 
-        let path = EncodedPath::from(Path::new("a/金/file.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("金", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("a/金/file.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("金", matched.get(1).unwrap());
     }
 
     #[test]
@@ -1301,9 +1308,9 @@ mod tests {
 
         assert!(!glob.is_match(Path::new("a/b/file.ext")));
 
-        let path = EncodedPath::from(Path::new("a/[/file.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("[", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("a/[/file.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("[", matched.get(1).unwrap());
     }
 
     #[cfg(any(unix, windows))]
@@ -1328,18 +1335,18 @@ mod tests {
         assert!(!glob.is_match(Path::new("a/y/file.ext")));
         assert!(!glob.is_match(Path::new("a/xyzub/file.ext")));
 
-        let path = EncodedPath::from(Path::new("a/xyzb/file.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("xyz", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("a/xyzb/file.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("xyz", matched.get(1).unwrap());
     }
 
     #[test]
     fn match_glob_with_nested_alternative_tokens() {
         let glob = Glob::new("a/{y$,{x?z,?z}}b/*").unwrap();
 
-        let path = EncodedPath::from(Path::new("a/xyzb/file.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("xyz", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("a/xyzb/file.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("xyz", matched.get(1).unwrap());
     }
 
     #[test]
@@ -1375,9 +1382,9 @@ mod tests {
         assert!(!glob.is_match(Path::new("a/0000000/file.ext")));
         assert!(!glob.is_match(Path::new("a/bbbbbb/file.ext")));
 
-        let path = EncodedPath::from(Path::new("a/999999/file.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("999999", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("a/999999/file.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("999999", matched.get(1).unwrap());
     }
 
     #[test]
@@ -1401,9 +1408,9 @@ mod tests {
         assert!(!glob.is_match(Path::new("log-abc.txt")));
         assert!(!glob.is_match(Path::new("log-123-456-789.txt")));
 
-        let path = EncodedPath::from(Path::new("log-987-654.txt"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("-987-654", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("log-987-654.txt"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("-987-654", matched.get(1).unwrap());
     }
 
     #[test]
@@ -1418,9 +1425,9 @@ mod tests {
         assert!(!glob.is_match(Path::new("file.ext")));
         assert!(!glob.is_match(Path::new("c/file.ext")));
 
-        let path = EncodedPath::from(Path::new("aa/file.ext"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("aa", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("aa/file.ext"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("aa", matched.get(1).unwrap());
     }
 
     #[test]
@@ -1433,9 +1440,9 @@ mod tests {
         assert!(!glob.is_match(Path::new("./var/cron.log")));
         assert!(!glob.is_match(Path::new("mnt/var/log/cron.log")));
 
-        let path = EncodedPath::from(Path::new("/var/log/network.log"));
-        let captures = glob.captures(&path).unwrap();
-        assert_eq!("/", captures.get(1).unwrap());
+        let path = CandidatePath::from(Path::new("/var/log/network.log"));
+        let matched = glob.matched(&path).unwrap();
+        assert_eq!("/", matched.get(1).unwrap());
     }
 
     #[test]
