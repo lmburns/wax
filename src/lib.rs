@@ -712,7 +712,7 @@ impl<'e> WalkEntry<'e> {
         self.entry.path()
     }
 
-    pub fn to_encoded_path(&self) -> CandidatePath<'_> {
+    pub fn to_candidate_path(&self) -> CandidatePath<'_> {
         self.path().into()
     }
 
