@@ -1,6 +1,5 @@
 #![cfg(feature = "diagnostics-report")]
 
-use itertools::Itertools as _;
 use miette::{Diagnostic, LabeledSpan, SourceSpan};
 use std::borrow::Cow;
 use std::cmp;
@@ -9,7 +8,6 @@ use thiserror::Error;
 use vec1::Vec1;
 
 use crate::token::{self, TokenKind, Tokenized};
-use crate::Glob;
 
 pub type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
@@ -31,9 +29,9 @@ impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
 
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub trait DiagnosticGlob<'t>: Sized {
-    fn new(expression: &'t str) -> DiagnosticResult<'t, Glob<'t>>;
+    fn new(expression: &'t str) -> DiagnosticResult<'t, Self>;
 
-    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Glob<'t>)>;
+    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)>;
 }
 
 pub trait SourceSpanExt {
@@ -171,7 +169,7 @@ pub fn diagnostics<'i, 't>(
                             .tokens()
                             .iter()
                             .map(|token| SourceSpan::from(*token.annotation()))
-                            .fold1(|left, right| left.union(&right))
+                            .reduce(|left, right| left.union(&right))
                             .expect("no tokens in component"),
                     }) as BoxedDiagnostic
                 }),

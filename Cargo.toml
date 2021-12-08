@@ -32,7 +32,10 @@ diagnostics = [
 # Provides glob metadata through inspection APIs.
 diagnostics-inspect = []
 # Integrates with `miette` and provides `Diagnostic` error types and APIs.
-diagnostics-report = ["miette", "vec1"]
+diagnostics-report = [
+    "miette",
+    "vec1"
+]
 
 [dependencies]
 bstr = "^0.2.0"

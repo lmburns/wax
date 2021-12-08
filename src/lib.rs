@@ -576,14 +576,14 @@ impl<'t> Glob<'t> {
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 #[cfg(feature = "diagnostics-report")]
 impl<'t> DiagnosticGlob<'t> for Glob<'t> {
-    fn new(expression: &'t str) -> DiagnosticResult<'t, Glob<'t>> {
+    fn new(expression: &'t str) -> DiagnosticResult<'t, Self> {
         parse_and_diagnose(expression).map(|(tokenized, diagnostics)| {
             let regex = Glob::compile(tokenized.tokens().iter());
             (Glob { tokenized, regex }, diagnostics)
         })
     }
 
-    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Glob<'t>)> {
+    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)> {
         parse_and_diagnose(expression).map(|(mut tokenized, diagnostics)| {
             let prefix = tokenized.partition();
             let regex = Glob::compile(tokenized.tokens().iter());
@@ -901,10 +901,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
             .err()
             .map(|diagnostic| Box::new(diagnostic) as BoxedDiagnostic)
     });
-    let non_error_diagnostics = tokenized
-        .as_ref()
-        .into_iter()
-        .flat_map(|tokenized| report::diagnostics(tokenized));
+    let non_error_diagnostics = tokenized.as_ref().into_iter().flat_map(report::diagnostics);
     let diagnostics = non_error_diagnostics
         .chain(rule_error_diagnostic)
         .chain(parse_error_diagnostic)
