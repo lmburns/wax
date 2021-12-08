@@ -754,10 +754,10 @@ pub enum Wildcard {
 }
 
 #[derive(Clone, Debug)]
-pub struct LiteralSequence<'t>(SmallVec<[&'t Literal<'t>; 4]>);
+pub struct LiteralSequence<'i, 't>(SmallVec<[&'i Literal<'t>; 4]>);
 
-impl<'t> LiteralSequence<'t> {
-    pub fn literals(&self) -> &[&'t Literal<'t>] {
+impl<'i, 't> LiteralSequence<'i, 't> {
+    pub fn literals(&self) -> &[&'i Literal<'t>] {
         self.0.as_ref()
     }
 
@@ -786,14 +786,14 @@ impl<'t> LiteralSequence<'t> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Component<'t, A = ()>(SmallVec<[&'t Token<'t, A>; 4]>);
+pub struct Component<'i, 't, A = ()>(SmallVec<[&'i Token<'t, A>; 4]>);
 
-impl<'t, A> Component<'t, A> {
-    pub fn tokens(&self) -> &[&'t Token<'t, A>] {
+impl<'i, 't, A> Component<'i, 't, A> {
+    pub fn tokens(&self) -> &[&'i Token<'t, A>] {
         self.0.as_ref()
     }
 
-    pub fn literal(&self) -> Option<LiteralSequence<'t>> {
+    pub fn literal(&self) -> Option<LiteralSequence<'i, 't>> {
         // This predicate is more easily expressed with `all`, but `any` is used
         // here, because it returns `false` for empty iterators and in that case
         // this function should return `None`.
@@ -819,10 +819,11 @@ impl<'t, A> Component<'t, A> {
     }
 }
 
-pub fn components<'t, A, I>(tokens: I) -> impl Iterator<Item = Component<'t, A>>
+pub fn components<'i, 't, A, I>(tokens: I) -> impl Iterator<Item = Component<'i, 't, A>>
 where
+    't: 'i,
     A: 't,
-    I: IntoIterator<Item = &'t Token<'t, A>>,
+    I: IntoIterator<Item = &'i Token<'t, A>>,
     I::IntoIter: Clone,
 {
     tokens.into_iter().batching(|tokens| {

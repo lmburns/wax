@@ -39,12 +39,14 @@ pub use walkdir::Error as WalkError;
 #[cfg(feature = "diagnostics-inspect")]
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
-use crate::diagnostics::report;
+use crate::diagnostics::report::{self, BoxedDiagnostic};
 use crate::token::{Token, Tokenized};
 
 pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::inspect::CapturingToken;
+#[cfg(feature = "diagnostics-report")]
+pub use crate::diagnostics::report::{DiagnosticGlob, DiagnosticResult, DiagnosticResultExt};
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::Span;
 pub use crate::rule::RuleError;
@@ -571,6 +573,25 @@ impl<'t> Glob<'t> {
     }
 }
 
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+#[cfg(feature = "diagnostics-report")]
+impl<'t> DiagnosticGlob<'t> for Glob<'t> {
+    fn new(expression: &'t str) -> DiagnosticResult<'t, Glob<'t>> {
+        parse_and_diagnose(expression).map(|(tokenized, diagnostics)| {
+            let regex = Glob::compile(tokenized.tokens().iter());
+            (Glob { tokenized, regex }, diagnostics)
+        })
+    }
+
+    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Glob<'t>)> {
+        parse_and_diagnose(expression).map(|(mut tokenized, diagnostics)| {
+            let prefix = tokenized.partition();
+            let regex = Glob::compile(tokenized.tokens().iter());
+            ((prefix, Glob { tokenized, regex }), diagnostics)
+        })
+    }
+}
+
 impl<'t> TryFrom<&'t str> for Glob<'t> {
     type Error = GlobError<'t>;
 
@@ -867,6 +888,33 @@ fn parse_and_check(expression: &str) -> Result<Tokenized, GlobError> {
     let tokenized = token::parse(expression)?;
     rule::check(&tokenized)?;
     Ok(tokenized)
+}
+
+#[cfg(feature = "diagnostics-report")]
+fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
+    let (tokenized, parse_error_diagnostic) = match token::parse(expression) {
+        Ok(tokenized) => (Some(tokenized), None),
+        Err(diagnostic) => (None, Some(Box::new(diagnostic) as BoxedDiagnostic)),
+    };
+    let rule_error_diagnostic = tokenized.as_ref().and_then(|tokenized| {
+        rule::check(tokenized)
+            .err()
+            .map(|diagnostic| Box::new(diagnostic) as BoxedDiagnostic)
+    });
+    let non_error_diagnostics = tokenized
+        .as_ref()
+        .into_iter()
+        .flat_map(|tokenized| report::diagnostics(tokenized));
+    let diagnostics = non_error_diagnostics
+        .chain(rule_error_diagnostic)
+        .chain(parse_error_diagnostic)
+        .collect();
+    if let Some(tokenized) = tokenized {
+        Ok((tokenized, diagnostics))
+    }
+    else {
+        Err(diagnostics.try_into().expect("parse failed with no error"))
+    }
 }
 
 // TODO: Construct paths from components in tests. In practice, using string

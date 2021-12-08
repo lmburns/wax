@@ -4,9 +4,37 @@ use itertools::Itertools as _;
 use miette::{Diagnostic, LabeledSpan, SourceSpan};
 use std::borrow::Cow;
 use std::cmp;
+use std::path::PathBuf;
 use thiserror::Error;
+use vec1::Vec1;
 
 use crate::token::{self, TokenKind, Tokenized};
+use crate::Glob;
+
+pub type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+pub type DiagnosticResult<'t, T> = Result<(T, Vec<BoxedDiagnostic<'t>>), Vec1<BoxedDiagnostic<'t>>>;
+
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+pub trait DiagnosticResultExt<'t, T> {
+    fn diagnostics(&self) -> &[BoxedDiagnostic<'t>];
+}
+
+impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
+    fn diagnostics(&self) -> &[BoxedDiagnostic<'t>] {
+        match self {
+            Ok((_, ref diagnostics)) => diagnostics,
+            Err(ref diagnostics) => diagnostics,
+        }
+    }
+}
+
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+pub trait DiagnosticGlob<'t>: Sized {
+    fn new(expression: &'t str) -> DiagnosticResult<'t, Glob<'t>>;
+
+    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Glob<'t>)>;
+}
 
 pub trait SourceSpanExt {
     fn union(&self, other: &SourceSpan) -> SourceSpan;
@@ -127,9 +155,9 @@ pub struct TerminatingSeparatorWarning<'t> {
     span: SourceSpan,
 }
 
-pub fn diagnostics<'t>(
-    tokenized: &'t Tokenized<'t>,
-) -> impl Iterator<Item = Box<dyn Diagnostic + 't>> {
+pub fn diagnostics<'i, 't>(
+    tokenized: &'i Tokenized<'t>,
+) -> impl 'i + Iterator<Item = BoxedDiagnostic<'t>> {
     None.into_iter()
         .chain(
             token::components(tokenized.tokens().iter())
@@ -145,7 +173,7 @@ pub fn diagnostics<'t>(
                             .map(|token| SourceSpan::from(*token.annotation()))
                             .fold1(|left, right| left.union(&right))
                             .expect("no tokens in component"),
-                    }) as Box<dyn Diagnostic>
+                    }) as BoxedDiagnostic
                 }),
         )
         .chain(tokenized.tokens().last().into_iter().flat_map(|token| {
@@ -153,7 +181,7 @@ pub fn diagnostics<'t>(
                 Box::new(TerminatingSeparatorWarning {
                     expression: tokenized.expression().clone(),
                     span: (*token.annotation()).into(),
-                }) as Box<dyn Diagnostic>
+                }) as BoxedDiagnostic
             })
         }))
 }

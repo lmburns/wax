@@ -9,6 +9,10 @@
 //! Most rules concern alternatives, which have complex interactions with
 //! neighboring tokens.
 
+// TODO: The `check` function fails fast and either report no errors or exactly
+//       one error. To better support diagnostics, `check` should probably
+//       perform an exhaustive analysis and report zero or more errors.
+
 use itertools::Itertools as _;
 #[cfg(feature = "diagnostics-report")]
 use miette::{Diagnostic, LabeledSpan, SourceCode, SourceSpan};
@@ -103,7 +107,6 @@ pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 }
 
 fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    eprintln!("CHECKING BOUNDARIES:\n{:#?}", tokenized);
     #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
     if let Some((left, right)) = tokenized
         .tokens()
@@ -153,12 +156,12 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     }
 
     #[derive(Clone, Copy, Default)]
-    struct Outer<'t, 'i> {
+    struct Outer<'i, 't> {
         left: Option<&'i Token<'t>>,
         right: Option<&'i Token<'t>>,
     }
 
-    impl<'t, 'i> Outer<'t, 'i> {
+    impl<'i, 't> Outer<'i, 't> {
         pub fn push(self, left: Option<&'i Token<'t>>, right: Option<&'i Token<'t>>) -> Self {
             Outer {
                 left: left.or(self.left),
@@ -202,7 +205,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     }
 
     #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
-    fn diagnose<'t, 'i>(
+    fn diagnose<'i, 't>(
         // This is a somewhat unusual API, but it allows the lifetime `'t` of
         // the `Cow` to be properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
@@ -230,12 +233,12 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         }
     }
 
-    fn recurse<'t, 'i, I>(
+    fn recurse<'i, 't, I>(
         // This is a somewhat unusual API, but it allows the lifetime `'t` of
         // the `Cow` to be properly forwarded to output values (`RuleError`).
         #[allow(clippy::ptr_arg)] expression: &Cow<'t, str>,
         tokens: I,
-        outer: Outer<'t, 'i>,
+        outer: Outer<'i, 't>,
     ) -> Result<(), RuleError<'t>>
     where
         I: IntoIterator<Item = &'i Token<'t>>,

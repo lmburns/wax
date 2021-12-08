@@ -32,7 +32,7 @@ diagnostics = [
 # Provides glob metadata through inspection APIs.
 diagnostics-inspect = []
 # Integrates with `miette` and provides `Diagnostic` error types and APIs.
-diagnostics-report = ["miette"]
+diagnostics-report = ["miette", "vec1"]
 
 [dependencies]
 bstr = "^0.2.0"
@@ -57,6 +57,11 @@ features = [
     "std",
     "unicode-case"
 ]
+
+[dependencies.vec1]
+version = "^1.8.0"
+default-features = false
+optional = true
 
 [dev-dependencies]
 build-fs-tree = "^0.3.0"
