@@ -259,7 +259,8 @@ about failures.
 
 Wax optionally integrates with the [`miette`][miette] crate, which can be used
 to capture and display diagnostics. This can be useful for reporting errors to
-users that provide glob expressions.
+users that provide glob expressions. Diagnostic reporting, including warnings
+and help diagnostics, can be enabled with the `diagnostics-report` feature.
 
 ```
 Error: glob::rule
@@ -274,8 +275,20 @@ Error: glob::rule
    `----
 ```
 
+Wax also provides inspection APIs that allow code to query glob metadata.
+Diagnostic inspection can be enabled with the `diagnostics-inspect` feature.
+
+```rust
+use wax::Glob;
+
+let glob = Glob::new("videos/**/{*.{mp4,webm}}").unwrap();
+println!("glob has {} captures", glob.captures().count());
+```
+
 Diagnostics are disabled by default and can be enabled with the `diagnostics`
-feature. This can be done via Cargo in a crate's `Cargo.toml` file.
+meta-feature, which enables both the `diagnostics-inspect` and
+`diagnostics-report` features. This can be done via Cargo in a crate's
+`Cargo.toml` file.
 
 ```toml
 [dependency.wax]
@@ -360,7 +373,7 @@ overwhelming majority of paths can be losslessly encoded in UTF-8.
 
 At the time of writing, Wax is experimental and unstable. It is possible that
 glob expression syntax and semantics may change between versions in the `0.y.z`
-series without warning.
+series without warning nor deprecation.
 
 [miette]: https://github.com/zkat/miette
 [nym]: https://github.com/olson-sean-k/nym

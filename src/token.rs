@@ -888,6 +888,7 @@ where
     })
 }
 
+// TODO: Is there some way to unify this with `invariant_prefix_upper_bound`?
 pub fn invariant_prefix_path<'t, A, I>(tokens: I) -> Option<PathBuf>
 where
     A: 't,

@@ -1,9 +1,5 @@
 #![cfg(feature = "diagnostics-inspect")]
 
-// TODO: The `diagnostics-inspect` feature is currently trivial and relies
-//       entirely on existing code (there are no additional dependencies).
-//       Consider removing it (and collapsing the diagnostics features).
-
 use crate::diagnostics::Span;
 use crate::token::Token;
 
@@ -48,13 +44,13 @@ mod tests {
     fn inspect_capture_indices() {
         let glob = Glob::new("**/{foo*,bar*}/???").unwrap();
         let indices: Vec<_> = glob.captures().map(|token| token.index()).collect();
-        assert_eq!(&indices, &[1, 2, 3, 4, 5,]);
+        assert_eq!(&indices, &[1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn inspect_capture_spans() {
         let glob = Glob::new("**/{foo*,bar*}/$").unwrap();
         let spans: Vec<_> = glob.captures().map(|token| token.span()).collect();
-        assert_eq!(&spans, &[(0, 3), (3, 11), (15, 1),]);
+        assert_eq!(&spans, &[(0, 3), (3, 11), (15, 1)]);
     }
 }

@@ -23,15 +23,15 @@ rustdoc-args = [
 ]
 
 [features]
-default = ["diagnostics-inspect"]
-# Enables all diagnostics features.
+default = []
+# Enables all diagnostics features. See below.
 diagnostics = [
     "diagnostics-inspect",
     "diagnostics-report"
 ]
-# Provides glob metadata through inspection APIs.
+# Exposes glob metadata through inspection APIs.
 diagnostics-inspect = []
-# Integrates with `miette` and provides `Diagnostic` error types and APIs.
+# Integrates with `miette` and provides `Diagnostic` error types and reporting.
 diagnostics-report = [
     "miette",
     "vec1"
