@@ -133,8 +133,8 @@ impl From<SourceSpan> for CorrelatedSourceSpan {
 }
 
 #[derive(Clone, Debug, Diagnostic, Error)]
-#[diagnostic(code(glob::semantic_literal), severity(warning))]
-#[error("\"{literal}\" has been interpreted as a literal with no semantics")]
+#[diagnostic(code(wax::glob::semantic_literal), severity(warning))]
+#[error("`{literal}` has been interpreted as a literal with no semantics")]
 pub struct SemanticLiteralWarning<'t> {
     #[source_code]
     expression: Cow<'t, str>,
@@ -144,7 +144,7 @@ pub struct SemanticLiteralWarning<'t> {
 }
 
 #[derive(Clone, Debug, Diagnostic, Error)]
-#[diagnostic(code(glob::terminating_separator), severity(warning))]
+#[diagnostic(code(wax::glob::terminating_separator), severity(warning))]
 #[error("terminating separator may discard matches")]
 pub struct TerminatingSeparatorWarning<'t> {
     #[source_code]
@@ -158,8 +158,7 @@ pub fn diagnostics<'i, 't>(
 ) -> impl 'i + Iterator<Item = BoxedDiagnostic<'t>> {
     None.into_iter()
         .chain(
-            token::components(tokenized.tokens().iter())
-                .flat_map(|component| component.literal().map(|literal| (component, literal)))
+            token::literals(tokenized.tokens())
                 .filter(|(_, literal)| literal.is_semantic_literal())
                 .map(|(component, literal)| {
                     Box::new(SemanticLiteralWarning {
@@ -191,8 +190,8 @@ mod tests {
 
     // It is non-trivial to downcast `&dyn Diagnostic`, so diagnostics are
     // identified in tests by code.
-    const CODE_SEMANTIC_LITERAL: &str = "glob::semantic_literal";
-    const CODE_TERMINATING_SEPARATOR: &str = "glob::terminating_separator";
+    const CODE_SEMANTIC_LITERAL: &str = "wax::glob::semantic_literal";
+    const CODE_TERMINATING_SEPARATOR: &str = "wax::glob::terminating_separator";
 
     #[cfg(any(unix, windows))]
     #[test]

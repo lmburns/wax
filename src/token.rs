@@ -226,7 +226,7 @@ impl<'t> ParseError<'t> {
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 impl<'t> Diagnostic for ParseError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
-        Some(Box::new("glob::parse"))
+        Some(Box::new("wax::glob::parse"))
     }
 
     fn source_code(&self) -> Option<&dyn SourceCode> {
@@ -240,10 +240,6 @@ impl<'t> Diagnostic for ParseError<'t> {
     // Upper bound errors are labeled as-is, though they only sometimes provide
     // useful context.
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
-        let end = self
-            .ends
-            .first()
-            .map(|end| LabeledSpan::new(Some(String::from("deepest parse here")), end.offset, 1));
         Some(Box::new(
             Some(LabeledSpan::new(
                 Some(String::from("starting here")),
@@ -251,8 +247,13 @@ impl<'t> Diagnostic for ParseError<'t> {
                 1,
             ))
             .into_iter()
-            .chain(end)
-            .chain(self.ends.iter().cloned().map(LabeledSpan::from)),
+            .chain(self.ends.iter().cloned().map(|end| {
+                LabeledSpan::new(
+                    Some(end.context),
+                    self.start.offset,
+                    end.offset.saturating_sub(self.start.offset) + 1,
+                )
+            })),
         ))
     }
 }
@@ -785,7 +786,7 @@ impl<'i, 't> LiteralSequence<'i, 't> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Component<'i, 't, A = ()>(SmallVec<[&'i Token<'t, A>; 4]>);
 
 impl<'i, 't, A> Component<'i, 't, A> {
@@ -819,6 +820,12 @@ impl<'i, 't, A> Component<'i, 't, A> {
     }
 }
 
+impl<'i, 't, A> Clone for Component<'i, 't, A> {
+    fn clone(&self) -> Self {
+        Component(self.0.clone())
+    }
+}
+
 pub fn components<'i, 't, A, I>(tokens: I) -> impl Iterator<Item = Component<'i, 't, A>>
 where
     't: 'i,
@@ -840,6 +847,44 @@ where
                     .collect(),
             ),
         })
+    })
+}
+
+// TODO: This implementation allocates many `Vec`s.
+pub fn literals<'i, 't, A, I>(
+    tokens: I,
+) -> impl Iterator<Item = (Component<'i, 't, A>, LiteralSequence<'i, 't>)>
+where
+    't: 'i,
+    A: 't,
+    I: IntoIterator<Item = &'i Token<'t, A>>,
+    I::IntoIter: Clone,
+{
+    components(tokens).flat_map(|component| {
+        if let Some(literal) = component.literal() {
+            vec![(component, literal)]
+        }
+        else {
+            component
+                .tokens()
+                .iter()
+                .filter_map(|token| match token.kind() {
+                    TokenKind::Alternative(ref alternative) => Some(
+                        alternative
+                            .branches()
+                            .iter()
+                            .map(literals)
+                            .flatten()
+                            .collect::<Vec<_>>(),
+                    ),
+                    TokenKind::Repetition(ref repetition) => {
+                        Some(literals(repetition.tokens()).collect::<Vec<_>>())
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>()
+        }
     })
 }
 
@@ -1320,7 +1365,7 @@ mod tests {
     #[test]
     fn invariant_prefix_path() {
         fn invariant_prefix_path(expression: &str) -> Option<PathBuf> {
-            token::invariant_prefix_path(token::parse(expression).unwrap().tokens().iter())
+            token::invariant_prefix_path(token::parse(expression).unwrap().tokens())
         }
 
         assert_eq!(invariant_prefix_path("/a/b").unwrap(), Path::new("/a/b"));

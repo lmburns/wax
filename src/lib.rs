@@ -279,7 +279,7 @@ pub enum GlobError<'t> {
     #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
     Rule(RuleError<'t>),
     #[error("failed to walk directory tree: {0}")]
-    #[cfg_attr(feature = "diagnostics-report", diagnostic(code = "glob::walk"))]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(code = "wax::glob::walk"))]
     Walk(WalkError),
 }
 
@@ -381,7 +381,7 @@ impl<'t> Glob<'t> {
 
     pub fn new(expression: &'t str) -> Result<Self, GlobError<'t>> {
         let tokenized = parse_and_check(expression)?;
-        let regex = Glob::compile(tokenized.tokens().iter());
+        let regex = Glob::compile(tokenized.tokens());
         Ok(Glob { tokenized, regex })
     }
 
@@ -468,7 +468,7 @@ impl<'t> Glob<'t> {
     pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
         let mut tokenized = parse_and_check(expression)?;
         let prefix = tokenized.partition();
-        let regex = Glob::compile(tokenized.tokens().iter());
+        let regex = Glob::compile(tokenized.tokens());
         Ok((prefix, Glob { tokenized, regex }))
     }
 
@@ -495,7 +495,7 @@ impl<'t> Glob<'t> {
         // invariant prefix from the glob pattern. `Walk` patterns are only
         // applied to path components following the `prefix` (distinct from the
         // glob pattern prefix) in `root`.
-        let (root, prefix, depth) = token::invariant_prefix_path(self.tokenized.tokens().iter())
+        let (root, prefix, depth) = token::invariant_prefix_path(self.tokenized.tokens())
             .map(|prefix| {
                 let root = directory.join(&prefix).into();
                 if prefix.is_absolute() {
@@ -519,7 +519,7 @@ impl<'t> Glob<'t> {
                 let root = Cow::from(directory);
                 (root.clone(), root, depth)
             });
-        let regexes = Walk::compile(self.tokenized.tokens().iter());
+        let regexes = Walk::compile(self.tokenized.tokens());
         Walk {
             regex: Cow::Borrowed(&self.regex),
             regexes,
@@ -544,7 +544,7 @@ impl<'t> Glob<'t> {
     #[cfg(feature = "diagnostics-inspect")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
     pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
-        inspect::captures(self.tokenized.tokens().iter())
+        inspect::captures(self.tokenized.tokens())
     }
 
     pub fn is_invariant(&self) -> bool {
@@ -564,12 +564,7 @@ impl<'t> Glob<'t> {
     }
 
     pub fn has_semantic_literals(&self) -> bool {
-        token::components(self.tokenized.tokens().iter()).any(|component| {
-            component
-                .literal()
-                .map(|literal| literal.is_semantic_literal())
-                .unwrap_or(false)
-        })
+        token::literals(self.tokenized.tokens()).any(|(_, literal)| literal.is_semantic_literal())
     }
 }
 
@@ -578,7 +573,7 @@ impl<'t> Glob<'t> {
 impl<'t> DiagnosticGlob<'t> for Glob<'t> {
     fn new(expression: &'t str) -> DiagnosticResult<'t, Self> {
         parse_and_diagnose(expression).map(|(tokenized, diagnostics)| {
-            let regex = Glob::compile(tokenized.tokens().iter());
+            let regex = Glob::compile(tokenized.tokens());
             (Glob { tokenized, regex }, diagnostics)
         })
     }
@@ -586,7 +581,7 @@ impl<'t> DiagnosticGlob<'t> for Glob<'t> {
     fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)> {
         parse_and_diagnose(expression).map(|(mut tokenized, diagnostics)| {
             let prefix = tokenized.partition();
-            let regex = Glob::compile(tokenized.tokens().iter());
+            let regex = Glob::compile(tokenized.tokens());
             ((prefix, Glob { tokenized, regex }), diagnostics)
         })
     }
@@ -1656,6 +1651,9 @@ mod tests {
     fn query_glob_has_semantic_literals() {
         assert!(Glob::new("../src/**").unwrap().has_semantic_literals());
         assert!(Glob::new("*/a/../b.*").unwrap().has_semantic_literals());
+        assert!(Glob::new("{a,..}").unwrap().has_semantic_literals());
+        assert!(Glob::new("<a/..>").unwrap().has_semantic_literals());
+        assert!(Glob::new("<a/{b,..,c}/d>").unwrap().has_semantic_literals());
         assert!(Glob::new("./*.txt").unwrap().has_semantic_literals());
     }
 }

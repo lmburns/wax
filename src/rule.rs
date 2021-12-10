@@ -73,7 +73,13 @@ impl<'t> RuleError<'t> {
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 impl<'t> Diagnostic for RuleError<'t> {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
-        Some(Box::new(String::from("glob::rule")))
+        Some(Box::new(String::from(match self.kind {
+            ErrorKind::RootedSubGlob => "wax::glob::rooted_sub_glob",
+            ErrorKind::SingularTree => "wax::glob::singular_tree",
+            ErrorKind::SingularZeroOrMore => "wax::glob::singular_zero_or_more",
+            ErrorKind::AdjacentBoundary => "wax::glob::adjacent_boundary",
+            ErrorKind::AdjacentZeroOrMore => "wax::glob::adjacent_zero_or_more",
+        })))
     }
 
     fn source_code(&self) -> Option<&dyn SourceCode> {
@@ -462,7 +468,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 
     recurse(
         tokenized.expression(),
-        tokenized.tokens().iter(),
+        tokenized.tokens(),
         Default::default(),
     )
 }
