@@ -23,7 +23,6 @@ use miette::Diagnostic;
 use regex::Regex;
 use std::borrow::{Borrow, Cow};
 use std::cmp;
-use std::convert::TryFrom;
 use std::ffi::OsStr;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::fs::{FileType, Metadata};
@@ -606,6 +605,30 @@ impl FromStr for Glob<'static> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Any<'t> {
+    any: token::Any<'t>,
+    regex: Regex,
+}
+
+// TODO: Consider abstracting the notion of a glob such that both `Glob` and any
+//       combinators can share certain traits and operations. Note that matching
+//       is identical; perhaps other traits are the same too.
+impl<'t> Any<'t> {
+    fn compile(any: &token::Any<'t>) -> Regex {
+        encode::compile([any.token()])
+    }
+
+    pub fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
+        let path = path.into();
+        self.regex.is_match(path.as_ref())
+    }
+
+    pub fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
+        self.regex.captures(path.as_ref()).map(From::from)
+    }
+}
+
 /// Traverses a directory tree via a `Walk` instance.
 ///
 /// This macro emits an interruptable loop that executes a block of code
@@ -819,6 +842,28 @@ impl<'g> Iterator for Walk<'g> {
         });
         None
     }
+}
+
+pub fn any<'t, I>(globs: I) -> Result<Any<'t>, <I::Item as TryInto<Glob<'t>>>::Error>
+where
+    I: IntoIterator,
+    I::Item: TryInto<Glob<'t>>,
+{
+    let tokens = globs
+        .into_iter()
+        .map(TryInto::try_into)
+        .map_ok(|glob| glob.tokenized.into_tokens())
+        .collect::<Result<Vec<_>, _>>()?;
+    // TODO: The `any` combinator constructs an alternative token from other
+    //       existing tokens and so has no annotation. Perhaps tokens with
+    //       disjoint annotations could be used, such that the containing token
+    //       can be constructed with no annotation regardless of annotations in
+    //       its contained tokens.
+    // Depending on which features are enabled, `Annotation` may be unit `()`.
+    #[allow(clippy::unit_arg)]
+    let any = token::any(Default::default(), tokens);
+    let regex = Any::compile(&any);
+    Ok(Any { any, regex })
 }
 
 pub fn is_match<'p>(
@@ -1099,6 +1144,17 @@ mod tests {
     }
 
     #[test]
+    fn build_any_combinator() {
+        crate::any([
+            Glob::new("src/**/*.rs").unwrap(),
+            Glob::new("doc/**/*.md").unwrap(),
+            Glob::new("pkg/**/PKGBUILD").unwrap(),
+        ])
+        .unwrap();
+        crate::any(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
+    }
+
+    #[test]
     fn reject_glob_with_invalid_separator_tokens() {
         assert!(Glob::new("//a").is_err());
         assert!(Glob::new("a//b").is_err());
@@ -1231,6 +1287,11 @@ mod tests {
         assert!(Glob::new("**(?i)?").is_err());
         assert!(Glob::new("a(?i)**").is_err());
         assert!(Glob::new("**(?i)a").is_err());
+    }
+
+    #[test]
+    fn reject_any_combinator() {
+        assert!(crate::any(["{a,b,c}", "{d, e}", "f/{g,/error,h}",]).is_err())
     }
 
     #[test]
@@ -1501,6 +1562,19 @@ mod tests {
         let glob = Glob::new("a\\(b\\)").unwrap();
 
         assert!(glob.is_match(Path::new("a(b)")));
+    }
+
+    #[test]
+    fn match_any_combinator() {
+        let any = crate::any(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
+
+        assert!(any.is_match("src/lib.rs"));
+        assert!(any.is_match("doc/api.md"));
+        assert!(any.is_match("pkg/arch/lib-git/PKGBUILD"));
+
+        assert!(!any.is_match("img/icon.png"));
+        assert!(!any.is_match("doc/LICENSE.tex"));
+        assert!(!any.is_match("pkg/lib.rs"));
     }
 
     #[test]

@@ -295,6 +295,11 @@ impl<'t, A> Tokenized<'t, A> {
         }
     }
 
+    pub fn into_tokens(self) -> Vec<Token<'t, A>> {
+        let Tokenized { tokens, .. } = self;
+        tokens
+    }
+
     pub fn partition(&mut self) -> PathBuf {
         // Get the invariant prefix for the token sequence.
         let prefix = invariant_prefix_path(self.tokens.iter()).unwrap_or_else(PathBuf::new);
@@ -753,6 +758,17 @@ pub enum Wildcard {
 }
 
 #[derive(Clone, Debug)]
+pub struct Any<'t, A = Annotation> {
+    token: Token<'t, A>,
+}
+
+impl<'t, A> Any<'t, A> {
+    pub fn token(&self) -> &Token<'t, A> {
+        &self.token
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct LiteralSequence<'i, 't>(SmallVec<[&'i Literal<'t>; 4]>);
 
 impl<'i, 't> LiteralSequence<'i, 't> {
@@ -821,6 +837,26 @@ impl<'i, 't, A> Component<'i, 't, A> {
 impl<'i, 't, A> Clone for Component<'i, 't, A> {
     fn clone(&self) -> Self {
         Component(self.0.clone())
+    }
+}
+
+// NOTE: This combinator intentionally omits rule checks.
+pub fn any<'t, A, I>(annotation: A, tokens: I) -> Any<'t, A>
+where
+    I: IntoIterator,
+    I::Item: IntoIterator<Item = Token<'t, A>>,
+{
+    Any {
+        token: Token {
+            kind: Alternative(
+                tokens
+                    .into_iter()
+                    .map(|tokens| tokens.into_iter().collect())
+                    .collect(),
+            )
+            .into(),
+            annotation,
+        },
     }
 }
 
