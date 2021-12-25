@@ -38,7 +38,7 @@ pub use walkdir::Error as WalkError;
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{self, BoxedDiagnostic};
-use crate::token::{Token, Tokenized};
+use crate::token::{IntoTokens, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
@@ -264,6 +264,12 @@ impl<T> Terminals<T> {
             Terminals::StartEnd(start, end) => Terminals::StartEnd(f(start), f(end)),
         }
     }
+}
+
+pub trait Pattern<'t>: IntoTokens<'t> {
+    fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool;
+
+    fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>>;
 }
 
 // TODO: Is is not possible to use the `#[doc(cfg())]` attribute on the
@@ -587,14 +593,6 @@ impl<'t> DiagnosticGlob<'t> for Glob<'t> {
     }
 }
 
-impl<'t> TryFrom<&'t str> for Glob<'t> {
-    type Error = GlobError<'t>;
-
-    fn try_from(expression: &'t str) -> Result<Self, Self::Error> {
-        Glob::new(expression)
-    }
-}
-
 impl FromStr for Glob<'static> {
     type Err = GlobError<'static>;
 
@@ -605,26 +603,58 @@ impl FromStr for Glob<'static> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Any<'t> {
-    any: token::Any<'t>,
-    regex: Regex,
+impl<'t> IntoTokens<'t> for Glob<'t> {
+    fn into_tokens(self) -> Vec<Token<'t>> {
+        let Glob { tokenized, .. } = self;
+        tokenized.into_tokens()
+    }
 }
 
-// TODO: Consider abstracting the notion of a glob such that both `Glob` and any
-//       combinators can share certain traits and operations. Note that matching
-//       is identical; perhaps other traits are the same too.
-impl<'t> Any<'t> {
-    fn compile(any: &token::Any<'t>) -> Regex {
-        encode::compile([any.token()])
-    }
-
-    pub fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
+impl<'t> Pattern<'t> for Glob<'t> {
+    fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
         self.regex.is_match(path.as_ref())
     }
 
-    pub fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
+    fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
+        self.regex.captures(path.as_ref()).map(From::from)
+    }
+}
+
+impl<'t> TryFrom<&'t str> for Glob<'t> {
+    type Error = GlobError<'t>;
+
+    fn try_from(expression: &'t str) -> Result<Self, Self::Error> {
+        Glob::new(expression)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Any<'t> {
+    token: Token<'t>,
+    regex: Regex,
+}
+
+impl<'t> Any<'t> {
+    fn compile(token: &Token<'t>) -> Regex {
+        encode::compile([token])
+    }
+}
+
+impl<'t> IntoTokens<'t> for Any<'t> {
+    fn into_tokens(self) -> Vec<Token<'t>> {
+        let Any { token, .. } = self;
+        vec![token]
+    }
+}
+
+impl<'t> Pattern<'t> for Any<'t> {
+    fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
+        let path = path.into();
+        self.regex.is_match(path.as_ref())
+    }
+
+    fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 }
@@ -844,15 +874,16 @@ impl<'g> Iterator for Walk<'g> {
     }
 }
 
-pub fn any<'t, I>(globs: I) -> Result<Any<'t>, <I::Item as TryInto<Glob<'t>>>::Error>
+pub fn any<'t, P, I>(globs: I) -> Result<Any<'t>, <I::Item as TryInto<P>>::Error>
 where
+    P: Pattern<'t>,
     I: IntoIterator,
-    I::Item: TryInto<Glob<'t>>,
+    I::Item: TryInto<P>,
 {
     let tokens = globs
         .into_iter()
         .map(TryInto::try_into)
-        .map_ok(|glob| glob.tokenized.into_tokens())
+        .map_ok(|pattern| pattern.into_tokens())
         .collect::<Result<Vec<_>, _>>()?;
     // TODO: The `any` combinator constructs an alternative token from other
     //       existing tokens and so has no annotation. Perhaps tokens with
@@ -861,9 +892,9 @@ where
     //       its contained tokens.
     // Depending on which features are enabled, `Annotation` may be unit `()`.
     #[allow(clippy::unit_arg)]
-    let any = token::any(Default::default(), tokens);
-    let regex = Any::compile(&any);
-    Ok(Any { any, regex })
+    let token = token::any(Default::default(), tokens);
+    let regex = Any::compile(&token);
+    Ok(Any { token, regex })
 }
 
 pub fn is_match<'p>(
@@ -962,7 +993,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
 mod tests {
     use std::path::Path;
 
-    use crate::{Adjacency, CandidatePath, Glob, IteratorExt as _};
+    use crate::{Adjacency, Any, CandidatePath, Glob, IteratorExt as _, Pattern};
 
     #[test]
     fn adjacent() {
@@ -1145,13 +1176,22 @@ mod tests {
 
     #[test]
     fn build_any_combinator() {
-        crate::any([
+        crate::any::<Glob, _>([
             Glob::new("src/**/*.rs").unwrap(),
             Glob::new("doc/**/*.md").unwrap(),
             Glob::new("pkg/**/PKGBUILD").unwrap(),
         ])
         .unwrap();
-        crate::any(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
+        crate::any::<Glob, _>(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
+    }
+
+    #[test]
+    fn build_any_nested_combinator() {
+        crate::any::<Any, _>([
+            crate::any::<Glob, _>(["a/b", "c/d"]).unwrap(),
+            crate::any::<Glob, _>(["{e,f,g}", "{h,i}"]).unwrap(),
+        ])
+        .unwrap();
     }
 
     #[test]
@@ -1291,7 +1331,7 @@ mod tests {
 
     #[test]
     fn reject_any_combinator() {
-        assert!(crate::any(["{a,b,c}", "{d, e}", "f/{g,/error,h}",]).is_err())
+        assert!(crate::any::<Glob, _>(["{a,b,c}", "{d, e}", "f/{g,/error,h}",]).is_err())
     }
 
     #[test]
@@ -1566,7 +1606,7 @@ mod tests {
 
     #[test]
     fn match_any_combinator() {
-        let any = crate::any(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
+        let any = crate::any::<Glob, _>(["src/**/*.rs", "doc/**/*.md", "pkg/**/PKGBUILD"]).unwrap();
 
         assert!(any.is_match("src/lib.rs"));
         assert!(any.is_match("doc/api.md"));

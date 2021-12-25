@@ -14,10 +14,10 @@ boundaries.
 
 ## Basic Usage
 
-Match a specific path against a glob:
+Match a path against a glob:
 
 ```rust
-use wax::Glob;
+use wax::{Glob, Pattern};
 
 let glob = Glob::new("*.png").unwrap();
 if glob.is_match("logo.png") {
@@ -25,10 +25,10 @@ if glob.is_match("logo.png") {
 }
 ```
 
-Match a specific path against a glob with matched text (captures):
+Match a path against a glob with matched text (captures):
 
 ```rust
-use wax::{CandidatePath, Glob};
+use wax::{CandidatePath, Glob, Pattern};
 
 let glob = Glob::new("**/{*.{go,rs}}").unwrap();
 
@@ -46,6 +46,22 @@ use wax::Glob;
 
 let glob = Glob::new("**/*.{md,txt}").unwrap();
 for entry in glob.walk("doc", usize::MAX) {
+    // ...
+}
+```
+
+Match a path against multiple globs:
+
+```rust
+use wax::{Glob, Pattern};
+
+let any = wax::any::<Glob, _>([
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "doc/**/*.md",
+    "pkg/**/PKGBUILD",
+]).unwrap();
+if any.is_match("src/token/mod.rs") {
     // ...
 }
 ```
