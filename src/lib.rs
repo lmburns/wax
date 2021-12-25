@@ -454,7 +454,7 @@ impl<'t> Glob<'t> {
     /// ```rust,no_run
     /// use dunce; // Avoids UNC paths on Windows.
     /// use std::path::Path;
-    /// use wax::Glob;
+    /// use wax::{Glob, Pattern};
     ///
     /// let path: &Path = /* ... */ // Candidate path.
     /// # Path::new("");
@@ -488,15 +488,6 @@ impl<'t> Glob<'t> {
             tokenized: tokenized.into_owned(),
             regex,
         }
-    }
-
-    pub fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
-        let path = path.into();
-        self.regex.is_match(path.as_ref())
-    }
-
-    pub fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
-        self.regex.captures(path.as_ref()).map(From::from)
     }
 
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
