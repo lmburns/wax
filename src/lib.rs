@@ -865,13 +865,13 @@ impl<'g> Iterator for Walk<'g> {
     }
 }
 
-pub fn any<'t, P, I>(globs: I) -> Result<Any<'t>, <I::Item as TryInto<P>>::Error>
+pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, <I::Item as TryInto<P>>::Error>
 where
     P: Pattern<'t>,
     I: IntoIterator,
     I::Item: TryInto<P>,
 {
-    let tokens = globs
+    let tokens = patterns
         .into_iter()
         .map(TryInto::try_into)
         .map_ok(|pattern| pattern.into_tokens())

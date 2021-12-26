@@ -248,9 +248,9 @@ the expression to match or walk overlapping trees.
 
 Glob patterns can be matched together using the [`any`] combinator. [`any`]
 accepts an [`IntoIterator`] type with items that can be converted into a type
-that implements [`Pattern`] (most notably [`Glob`]). The output of [`any`] is an
-[`Any`], which implements [`Pattern`] and efficiently matches any of its input
-patterns. This is often more ergonomic and faster than matching against multiple
+that implements [`Pattern`] (most notably [`Glob`]). The output is an [`Any`],
+which implements [`Pattern`] and efficiently matches any of its input patterns.
+This is often more ergonomic and faster than matching against multiple
 [`Glob`]s.
 
 ```rust
@@ -268,7 +268,7 @@ are converted and is typically [`Glob`].
 While the input types must be homogeneous, [`any`] accepts any types that can be
 converted into a [`Pattern`] type. This is useful when combining opaque globs
 from foreign code (i.e., when it is not possible to get or format glob
-expressions into an equivalent alternative expression).
+expressions into an equivalent [alternative](#alternatives) expression).
 
 ```rust
 extern crate foreign;
