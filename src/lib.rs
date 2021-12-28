@@ -38,7 +38,7 @@ pub use walkdir::Error as WalkError;
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{self, BoxedDiagnostic};
-use crate::token::{IntoTokens, Token, Tokenized};
+use crate::token::{Annotation, IntoTokens, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
@@ -595,7 +595,9 @@ impl FromStr for Glob<'static> {
 }
 
 impl<'t> IntoTokens<'t> for Glob<'t> {
-    fn into_tokens(self) -> Vec<Token<'t>> {
+    type Annotation = Annotation;
+
+    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
         let Glob { tokenized, .. } = self;
         tokenized.into_tokens()
     }
@@ -622,18 +624,20 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
 
 #[derive(Clone, Debug)]
 pub struct Any<'t> {
-    token: Token<'t>,
+    token: Token<'t, ()>,
     regex: Regex,
 }
 
 impl<'t> Any<'t> {
-    fn compile(token: &Token<'t>) -> Regex {
+    fn compile(token: &Token<'t, ()>) -> Regex {
         encode::compile([token])
     }
 }
 
 impl<'t> IntoTokens<'t> for Any<'t> {
-    fn into_tokens(self) -> Vec<Token<'t>> {
+    type Annotation = ();
+
+    fn into_tokens(self) -> Vec<Token<'t, Self::Annotation>> {
         let Any { token, .. } = self;
         vec![token]
     }
@@ -874,16 +878,17 @@ where
     let tokens = patterns
         .into_iter()
         .map(TryInto::try_into)
-        .map_ok(|pattern| pattern.into_tokens())
+        .map_ok(|pattern| {
+            pattern
+                .into_tokens()
+                .into_iter()
+                .map(|token| token.unannotate())
+                .collect::<Vec<_>>()
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    // TODO: The `any` combinator constructs an alternative token from other
-    //       existing tokens and so has no annotation. Perhaps tokens with
-    //       disjoint annotations could be used, such that the containing token
-    //       can be constructed with no annotation regardless of annotations in
-    //       its contained tokens.
     // Depending on which features are enabled, `Annotation` may be unit `()`.
     #[allow(clippy::unit_arg)]
-    let token = token::any(Default::default(), tokens);
+    let token = token::any(tokens);
     let regex = Any::compile(&token);
     Ok(Any { token, regex })
 }
