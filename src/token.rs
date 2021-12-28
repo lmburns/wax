@@ -881,7 +881,6 @@ impl<'i, 't, A> Clone for Component<'i, 't, A> {
     }
 }
 
-// NOTE: This combinator intentionally omits rule checks.
 pub fn any<'t, A, I>(tokens: I) -> Token<'t, ()>
 where
     I: IntoIterator,
