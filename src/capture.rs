@@ -4,15 +4,14 @@ use std::str;
 #[derive(Clone, Debug)]
 struct OwnedText {
     matched: String,
-    ranges: Vec<Option<(usize, usize)>>,
+    ranges:  Vec<Option<(usize, usize)>>,
 }
 
 impl OwnedText {
-    pub fn get(&self, index: usize) -> Option<&str> {
+    pub(crate) fn get(&self, index: usize) -> Option<&str> {
         if index == 0 {
             Some(self.matched.as_ref())
-        }
-        else {
+        } else {
             self.ranges
                 .get(index - 1)
                 .map(|range| range.map(|range| &self.matched[range.0..range.1]))
@@ -35,7 +34,7 @@ impl<'m, 't> From<&'m BorrowedText<'t>> for OwnedText {
             .skip(1)
             .map(|capture| capture.map(|capture| (capture.start(), capture.end())))
             .collect();
-        OwnedText { matched, ranges }
+        Self { matched, ranges }
     }
 }
 
@@ -45,7 +44,7 @@ enum MaybeOwnedText<'t> {
     Owned(OwnedText),
 }
 
-impl<'t> MaybeOwnedText<'t> {
+impl MaybeOwnedText<'_> {
     fn into_owned(self) -> MaybeOwnedText<'static> {
         match self {
             MaybeOwnedText::Borrowed(borrowed) => OwnedText::from(borrowed).into(),
@@ -78,29 +77,32 @@ pub struct MatchedText<'t> {
     inner: MaybeOwnedText<'t>,
 }
 
-impl<'t> MatchedText<'t> {
+impl MatchedText<'_> {
+    #[inline]
+    #[must_use]
     pub fn into_owned(self) -> MatchedText<'static> {
         let MatchedText { inner } = self;
-        MatchedText {
-            inner: inner.into_owned(),
-        }
+        MatchedText { inner: inner.into_owned() }
     }
 
+    #[inline]
+    #[must_use]
     pub fn to_owned(&self) -> MatchedText<'static> {
-        MatchedText {
-            inner: self.inner.to_owned(),
-        }
+        MatchedText { inner: self.inner.to_owned() }
     }
 
+    #[inline]
+    #[must_use]
     pub fn complete(&self) -> &str {
-        self.get(0).unwrap()
+        self.get(0).expect("failed to get index 0")
     }
 
+    #[inline]
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&str> {
         match self.inner {
-            MaybeOwnedText::Borrowed(ref captures) => {
-                captures.get(index).map(|capture| capture.as_str())
-            }
+            MaybeOwnedText::Borrowed(ref captures) =>
+                captures.get(index).map(|capture| capture.as_str()),
             MaybeOwnedText::Owned(ref captures) => captures.get(index),
         }
     }
@@ -108,17 +110,15 @@ impl<'t> MatchedText<'t> {
 
 // TODO: This probably shouldn't be part of the public API.
 impl<'t> From<BorrowedText<'t>> for MatchedText<'t> {
+    #[inline]
     fn from(captures: BorrowedText<'t>) -> Self {
-        MatchedText {
-            inner: captures.into(),
-        }
+        MatchedText { inner: captures.into() }
     }
 }
 
 impl From<OwnedText> for MatchedText<'static> {
+    #[inline]
     fn from(captures: OwnedText) -> Self {
-        MatchedText {
-            inner: captures.into(),
-        }
+        MatchedText { inner: captures.into() }
     }
 }

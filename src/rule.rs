@@ -36,7 +36,7 @@ pub struct RuleError<'t> {
 }
 
 impl<'t> RuleError<'t> {
-    fn new(
+    const fn new(
         expression: Cow<'t, str>,
         kind: ErrorKind,
         #[cfg(feature = "diagnostics-report")] span: CompositeSourceSpan,
@@ -49,6 +49,8 @@ impl<'t> RuleError<'t> {
         }
     }
 
+    #[inline]
+    #[must_use]
     pub fn into_owned(self) -> RuleError<'static> {
         let RuleError {
             expression,
@@ -64,6 +66,8 @@ impl<'t> RuleError<'t> {
         }
     }
 
+    #[inline]
+    #[must_use]
     pub fn expression(&self) -> &str {
         self.expression.as_ref()
     }
@@ -71,7 +75,7 @@ impl<'t> RuleError<'t> {
 
 #[cfg(feature = "diagnostics-report")]
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-impl<'t> Diagnostic for RuleError<'t> {
+impl Diagnostic for RuleError<'_> {
     fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
         Some(Box::new(String::from(match self.kind {
             ErrorKind::RootedSubGlob => "wax::glob::rooted_sub_glob",
@@ -106,7 +110,7 @@ enum ErrorKind {
     AdjacentZeroOrMore,
 }
 
-pub fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
+pub(crate) fn check<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
     boundary(tokenized)?;
     group(tokenized)?;
     Ok(())
@@ -149,7 +153,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 
     impl CorrelatedError {
         #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
-        fn new(kind: ErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
+        const fn new(kind: ErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
             CorrelatedError {
                 kind,
                 #[cfg(feature = "diagnostics-report")]

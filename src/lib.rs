@@ -9,7 +9,6 @@
     html_logo_url = "https://raw.githubusercontent.com/olson-sean-k/wax/master/doc/wax.svg?sanitize=true"
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-
 mod capture;
 mod diagnostics;
 mod encode;
@@ -21,14 +20,16 @@ use itertools::{Itertools as _, Position};
 #[cfg(feature = "diagnostics-report")]
 use miette::Diagnostic;
 use regex::Regex;
-use std::borrow::{Borrow, Cow};
-use std::cmp;
-use std::ffi::OsStr;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::fs::{FileType, Metadata};
-use std::iter::Fuse;
-use std::path::{Component, Path, PathBuf};
-use std::str::{self, FromStr};
+use std::{
+    borrow::{Borrow, Cow},
+    cmp,
+    ffi::OsStr,
+    fmt::{self, Debug, Display, Formatter},
+    fs::{FileType, Metadata},
+    iter::Fuse,
+    path::{Component, Path, PathBuf},
+    str::{self, FromStr},
+};
 use thiserror::Error;
 use walkdir::{self, DirEntry, WalkDir};
 
@@ -40,15 +41,13 @@ use crate::diagnostics::inspect;
 use crate::diagnostics::report::{self, BoxedDiagnostic};
 use crate::token::{Annotation, IntoTokens, Token, Tokenized};
 
-pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::inspect::CapturingToken;
 #[cfg(feature = "diagnostics-report")]
 pub use crate::diagnostics::report::{DiagnosticGlob, DiagnosticResult, DiagnosticResultExt};
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::Span;
-pub use crate::rule::RuleError;
-pub use crate::token::ParseError;
+pub use crate::{capture::MatchedText, rule::RuleError, token::ParseError};
 
 #[cfg(windows)]
 const PATHS_ARE_CASE_INSENSITIVE: bool = true;
@@ -84,7 +83,7 @@ trait StrExt {
 
 impl StrExt for str {
     fn has_casing(&self) -> bool {
-        self.chars().any(|x| x.has_casing())
+        self.chars().any(CharExt::has_casing)
     }
 }
 
@@ -115,7 +114,7 @@ enum Adjacency<T> {
 }
 
 impl<T> Adjacency<T> {
-    pub fn into_tuple(self) -> (Option<T>, T, Option<T>) {
+    pub(crate) fn into_tuple(self) -> (Option<T>, T, Option<T>) {
         match self {
             Adjacency::Only { item } => (None, item, None),
             Adjacency::First { item, right } => (None, item, Some(right)),
@@ -125,18 +124,12 @@ impl<T> Adjacency<T> {
     }
 }
 
-struct Adjacent<I>
-where
-    I: Iterator,
-{
-    input: Fuse<I>,
+struct Adjacent<I: Iterator> {
+    input:     Fuse<I>,
     adjacency: Option<Adjacency<I::Item>>,
 }
 
-impl<I> Adjacent<I>
-where
-    I: Iterator,
-{
+impl<I: Iterator> Adjacent<I> {
     fn new(input: I) -> Self {
         let mut input = input.fuse();
         let adjacency = match (input.next(), input.next()) {
@@ -146,7 +139,7 @@ where
             // The input iterator is fused, so this cannot occur.
             (None, Some(_)) => unreachable!(),
         };
-        Adjacent { input, adjacency }
+        Self { input, adjacency }
     }
 }
 
@@ -161,22 +154,13 @@ where
         let next = self.input.next();
         self.adjacency.take().map(|adjacency| {
             self.adjacency = match adjacency.clone() {
-                Adjacency::First {
-                    item: left,
-                    right: item,
-                }
-                | Adjacency::Middle {
-                    item: left,
-                    right: item,
-                    ..
-                } => {
+                Adjacency::First { item: left, right: item }
+                | Adjacency::Middle { item: left, right: item, .. } =>
                     if let Some(right) = next {
                         Some(Adjacency::Middle { left, item, right })
-                    }
-                    else {
+                    } else {
                         Some(Adjacency::Last { left, item })
-                    }
-                }
+                    },
                 Adjacency::Only { .. } | Adjacency::Last { .. } => None,
             };
             adjacency
@@ -239,11 +223,8 @@ impl<T> SliceExt<T> for [T] {
     fn terminals(&self) -> Option<Terminals<&T>> {
         match self.len() {
             0 => None,
-            1 => Some(Terminals::Only(&self[0])),
-            _ => Some(Terminals::StartEnd(
-                self.first().unwrap(),
-                self.last().unwrap(),
-            )),
+            1 => Some(Terminals::Only(self.get(0)?)),
+            _ => Some(Terminals::StartEnd(self.first()?, self.last()?)),
         }
     }
 }
@@ -255,7 +236,7 @@ enum Terminals<T> {
 }
 
 impl<T> Terminals<T> {
-    pub fn map<U, F>(self, mut f: F) -> Terminals<U>
+    pub(crate) fn map<U, F>(self, mut f: F) -> Terminals<U>
     where
         F: FnMut(T) -> U,
     {
@@ -293,7 +274,9 @@ pub enum GlobError<'t> {
     Walk(WalkError),
 }
 
-impl<'t> GlobError<'t> {
+impl GlobError<'_> {
+    #[inline]
+    #[must_use]
     pub fn into_owned(self) -> GlobError<'static> {
         match self {
             GlobError::Parse(error) => GlobError::Parse(error.into_owned()),
@@ -304,18 +287,21 @@ impl<'t> GlobError<'t> {
 }
 
 impl<'t> From<ParseError<'t>> for GlobError<'t> {
+    #[inline]
     fn from(error: ParseError) -> Self {
         GlobError::Parse(error.into_owned())
     }
 }
 
 impl From<WalkError> for GlobError<'static> {
+    #[inline]
     fn from(error: WalkError) -> Self {
         GlobError::Walk(error)
     }
 }
 
 impl<'t> From<RuleError<'t>> for GlobError<'t> {
+    #[inline]
     fn from(error: RuleError<'t>) -> Self {
         GlobError::Rule(error)
     }
@@ -326,33 +312,37 @@ pub struct CandidatePath<'b> {
     text: Cow<'b, str>,
 }
 
-impl<'b> CandidatePath<'b> {
+impl CandidatePath<'_> {
+    #[inline]
+    #[must_use]
     pub fn into_owned(self) -> CandidatePath<'static> {
-        CandidatePath {
-            text: self.text.into_owned().into(),
-        }
+        CandidatePath { text: self.text.into_owned().into() }
     }
 }
 
-impl<'b> AsRef<str> for CandidatePath<'b> {
+impl AsRef<str> for CandidatePath<'_> {
+    #[inline]
     fn as_ref(&self) -> &str {
         self.text.as_ref()
     }
 }
 
-impl<'b> Debug for CandidatePath<'b> {
+impl Debug for CandidatePath<'_> {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.text)
     }
 }
 
-impl<'b> Display for CandidatePath<'b> {
+impl Display for CandidatePath<'_> {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.text)
     }
 }
 
 impl<'b> From<&'b OsStr> for CandidatePath<'b> {
+    #[inline]
     fn from(text: &'b OsStr) -> Self {
         CandidatePath {
             text: match Vec::from_os_str_lossy(text) {
@@ -364,21 +354,26 @@ impl<'b> From<&'b OsStr> for CandidatePath<'b> {
 }
 
 impl<'b> From<&'b Path> for CandidatePath<'b> {
+    #[inline]
     fn from(path: &'b Path) -> Self {
         CandidatePath::from(path.as_os_str())
     }
 }
 
 impl<'b> From<&'b str> for CandidatePath<'b> {
+    #[inline]
     fn from(text: &'b str) -> Self {
         CandidatePath { text: text.into() }
     }
 }
 
+/// The glob pattern object
+///
+/// Consists of the regular expression pattern and a [`Tokenized`] object
 #[derive(Clone, Debug)]
 pub struct Glob<'t> {
     tokenized: Tokenized<'t>,
-    regex: Regex,
+    regex:     Regex,
 }
 
 impl<'t> Glob<'t> {
@@ -389,10 +384,20 @@ impl<'t> Glob<'t> {
         encode::compile(tokens)
     }
 
+    /// Create a new [`Glob`] object
+    ///
+    /// # Errors
+    /// May produce an error if the parsing of a glob pattern fails
+    #[inline]
     pub fn new(expression: &'t str) -> Result<Self, GlobError<'t>> {
         let tokenized = parse_and_check(expression)?;
-        let regex = Glob::compile(tokenized.tokens());
-        Ok(Glob { tokenized, regex })
+        let regex = Self::compile(tokenized.tokens());
+        Ok(Self { tokenized, regex })
+    }
+
+    /// Return the inner `Regex`
+    pub fn regex(&self) -> &Regex {
+        &self.regex
     }
 
     /// Partitions a glob expression into an invariant `PathBuf` prefix and
@@ -458,7 +463,7 @@ impl<'t> Glob<'t> {
     ///
     /// let path: &Path = /* ... */ // Candidate path.
     /// # Path::new("");
-    ///     
+    ///
     /// let directory = Path::new("."); // Working directory.
     /// let (prefix, glob) = Glob::partitioned("../../src/**").unwrap();
     /// let prefix = dunce::canonicalize(directory.join(&prefix)).unwrap();
@@ -475,6 +480,7 @@ impl<'t> Glob<'t> {
     /// The above examples illustrate particular approaches, but the invariant
     /// prefix can be used to interact with native paths as needed for a given
     /// application.
+    #[inline]
     pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
         let tokenized = parse_and_check(expression)?;
         let (prefix, tokenized) = tokenized.partition();
@@ -482,14 +488,14 @@ impl<'t> Glob<'t> {
         Ok((prefix, Glob { tokenized, regex }))
     }
 
+    #[inline]
+    #[must_use]
     pub fn into_owned(self) -> Glob<'static> {
         let Glob { tokenized, regex } = self;
-        Glob {
-            tokenized: tokenized.into_owned(),
-            regex,
-        }
+        Glob { tokenized: tokenized.into_owned(), regex }
     }
 
+    #[inline]
     pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
         let directory = directory.as_ref();
         // The directory tree is traversed from `root`, which may include an
@@ -497,29 +503,30 @@ impl<'t> Glob<'t> {
         // applied to path components following the `prefix` (distinct from the
         // glob pattern prefix) in `root`.
         let (root, prefix, depth) = token::invariant_prefix_path(self.tokenized.tokens())
-            .map(|prefix| {
-                let root = directory.join(&prefix).into();
-                if prefix.is_absolute() {
-                    // Absolute paths replace paths with which they are joined,
-                    // in which case there is no prefix.
-                    (root, PathBuf::new().into(), depth)
-                }
-                else {
-                    // TODO: If the depth is exhausted by an invariant prefix
-                    //       path, then `Walk` should yield no entries. This
-                    //       computes a depth of zero when this occurs, so
-                    //       entries may still be yielded.
-                    // `depth` is relative to the input `directory`, so count
-                    // any components added by an invariant prefix path from the
-                    // glob.
-                    let depth = depth - cmp::min(depth, prefix.components().count());
-                    (root, directory.into(), depth)
-                }
-            })
-            .unwrap_or_else(|| {
-                let root = Cow::from(directory);
-                (root.clone(), root, depth)
-            });
+            .map_or_else(
+                || {
+                    let root = Cow::from(directory);
+                    (root.clone(), root, depth)
+                },
+                |prefix| {
+                    let root = directory.join(&prefix).into();
+                    if prefix.is_absolute() {
+                        // Absolute paths replace paths with which they are joined,
+                        // in which case there is no prefix.
+                        (root, PathBuf::new().into(), depth)
+                    } else {
+                        // TODO: If the depth is exhausted by an invariant prefix
+                        //       path, then `Walk` should yield no entries. This
+                        //       computes a depth of zero when this occurs, so
+                        //       entries may still be yielded.
+                        // `depth` is relative to the input `directory`, so count
+                        // any components added by an invariant prefix path from the
+                        // glob.
+                        let depth = depth - cmp::min(depth, prefix.components().count());
+                        (root, directory.into(), depth)
+                    }
+                },
+            );
         let regexes = Walk::compile(self.tokenized.tokens());
         Walk {
             regex: Cow::Borrowed(&self.regex),
@@ -544,6 +551,8 @@ impl<'t> Glob<'t> {
         inspect::captures(self.tokenized.tokens())
     }
 
+    #[inline]
+    #[must_use]
     pub fn is_invariant(&self) -> bool {
         // TODO: This may be expensive.
         self.tokenized
@@ -552,14 +561,17 @@ impl<'t> Glob<'t> {
             .all(|token| token.to_invariant_string().is_some())
     }
 
+    #[inline]
+    #[must_use]
     pub fn has_root(&self) -> bool {
         self.tokenized
             .tokens()
             .first()
-            .map(|token| token.is_rooted())
-            .unwrap_or(false)
+            .map_or(false, Token::is_rooted)
     }
 
+    #[inline]
+    #[must_use]
     pub fn has_semantic_literals(&self) -> bool {
         token::literals(self.tokenized.tokens()).any(|(_, literal)| literal.is_semantic_literal())
     }
@@ -587,10 +599,11 @@ impl<'t> DiagnosticGlob<'t> for Glob<'t> {
 impl FromStr for Glob<'static> {
     type Err = GlobError<'static>;
 
+    #[inline]
     fn from_str(expression: &str) -> Result<Self, Self::Err> {
         Glob::new(expression)
-            .map(|glob| glob.into_owned())
-            .map_err(|error| error.into_owned())
+            .map(Glob::into_owned)
+            .map_err(GlobError::into_owned)
     }
 }
 
@@ -604,11 +617,13 @@ impl<'t> IntoTokens<'t> for Glob<'t> {
 }
 
 impl<'t> Pattern<'t> for Glob<'t> {
+    #[inline]
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
         self.regex.is_match(path.as_ref())
     }
 
+    #[inline]
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
@@ -644,11 +659,13 @@ impl<'t> IntoTokens<'t> for Any<'t> {
 }
 
 impl<'t> Pattern<'t> for Any<'t> {
+    #[inline]
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
         self.regex.is_match(path.as_ref())
     }
 
+    #[inline]
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
@@ -753,19 +770,25 @@ macro_rules! walk {
 /// Describes a file matching a `Glob` in a directory tree.
 #[derive(Debug)]
 pub struct WalkEntry<'e> {
-    entry: Cow<'e, DirEntry>,
+    entry:   Cow<'e, DirEntry>,
     matched: MatchedText<'e>,
 }
 
 impl<'e> WalkEntry<'e> {
+    /// Convert the entry into an owned instance
+    #[inline]
+    #[must_use]
     pub fn into_owned(self) -> WalkEntry<'static> {
         let WalkEntry { entry, matched } = self;
         WalkEntry {
-            entry: Cow::Owned(entry.into_owned()),
+            entry:   Cow::Owned(entry.into_owned()),
             matched: matched.into_owned(),
         }
     }
 
+    /// Convert the entry into a [`PathBuf`]
+    #[inline]
+    #[must_use]
     pub fn into_path(self) -> PathBuf {
         match self.entry {
             Cow::Borrowed(entry) => entry.path().to_path_buf(),
@@ -773,27 +796,44 @@ impl<'e> WalkEntry<'e> {
         }
     }
 
+    /// Return the [`Path`] to the entry
+    #[inline]
+    #[must_use]
     pub fn path(&self) -> &Path {
         self.entry.path()
     }
 
+    #[inline]
+    #[must_use]
     pub fn to_candidate_path(&self) -> CandidatePath<'_> {
         self.path().into()
     }
 
+    /// Return the entry's [`FileType`]
+    #[inline]
+    #[must_use]
     pub fn file_type(&self) -> FileType {
         self.entry.file_type()
     }
 
+    /// Return the `Metadata` of the entry
+    ///
+    /// # Errors
+    /// May produce an error if the metadata is unable to be acquired
+    #[inline]
     pub fn metadata(&self) -> Result<Metadata, GlobError<'static>> {
         self.entry.metadata().map_err(From::from)
     }
 
+    #[inline]
+    #[must_use]
     pub fn depth(&self) -> usize {
         self.entry.depth()
     }
 
-    pub fn matched(&self) -> &MatchedText<'e> {
+    #[inline]
+    #[must_use]
+    pub const fn matched(&self) -> &MatchedText<'e> {
         &self.matched
     }
 }
@@ -801,13 +841,13 @@ impl<'e> WalkEntry<'e> {
 /// Iterator over files matching a `Glob` in a directory tree.
 #[derive(Debug)]
 pub struct Walk<'g> {
-    regex: Cow<'g, Regex>,
+    regex:   Cow<'g, Regex>,
     regexes: Vec<Regex>,
-    prefix: PathBuf,
-    walk: walkdir::IntoIter,
+    prefix:  PathBuf,
+    walk:    walkdir::IntoIter,
 }
 
-impl<'g> Walk<'g> {
+impl Walk<'_> {
     fn compile<'t, I>(tokens: I) -> Vec<Regex>
     where
         I: IntoIterator<Item = &'t Token<'t>>,
@@ -824,26 +864,18 @@ impl<'g> Walk<'g> {
                 // boundary within an alternative token.
                 break;
             }
-            else {
-                regexes.push(Glob::compile(component.tokens().iter().cloned()));
-            }
+
+            regexes.push(Glob::compile(component.tokens().iter().copied()));
         }
         regexes
     }
 
+    /// Return an owned isntance of [`Walk`]
+    #[inline]
+    #[must_use]
     pub fn into_owned(self) -> Walk<'static> {
-        let Walk {
-            regex,
-            regexes,
-            prefix,
-            walk,
-        } = self;
-        Walk {
-            regex: Cow::Owned(regex.into_owned()),
-            regexes,
-            prefix,
-            walk,
-        }
+        let Walk { regex, regexes, prefix, walk } = self;
+        Walk { regex: Cow::Owned(regex.into_owned()), regexes, prefix, walk }
     }
 
     /// Calls a closure on each matched file or error.
@@ -851,6 +883,7 @@ impl<'g> Walk<'g> {
     /// This function does not copy the contents of paths and captures when
     /// emitting entries and so may be more efficient than external iteration
     /// via `Iterator` (and `Iterator::for_each`).
+    #[inline]
     pub fn for_each(mut self, mut f: impl FnMut(Result<WalkEntry, GlobError>)) {
         walk!(self => |entry| {
             f(entry);
@@ -858,9 +891,10 @@ impl<'g> Walk<'g> {
     }
 }
 
-impl<'g> Iterator for Walk<'g> {
+impl Iterator for Walk<'_> {
     type Item = Result<WalkEntry<'static>, GlobError<'static>>;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         walk!(self => |entry| {
             return Some(entry.map(|entry: WalkEntry| entry.into_owned()));
@@ -869,6 +903,13 @@ impl<'g> Iterator for Walk<'g> {
     }
 }
 
+// TODO: Better documentation
+
+/// Acts the same as the standard library's `any` function
+///
+/// # Errors
+/// May produce an error if the iterator fails to convert to `P`
+#[inline]
 pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, <I::Item as TryInto<P>>::Error>
 where
     P: Pattern<'t>,
@@ -891,6 +932,11 @@ where
     Ok(Any { token, regex })
 }
 
+/// Is the path a match to the `Glob` pattern?
+///
+/// # Errors
+/// May produce an error if the `Glob` fails to compile
+#[inline]
 pub fn is_match<'p>(
     expression: &str,
     path: impl Into<CandidatePath<'p>>,
@@ -899,6 +945,11 @@ pub fn is_match<'p>(
     Ok(glob.is_match(path))
 }
 
+/// Return the matched text to the `Glob` pattern
+///
+/// # Errors
+/// May produce an error if the `Glob` fails to compile
+#[inline]
 pub fn matched<'i, 'p>(
     expression: &'i str,
     path: &'p CandidatePath<'_>,
@@ -907,6 +958,12 @@ pub fn matched<'i, 'p>(
     Ok(glob.matched(path))
 }
 
+/// Return a `Walk` object, which contains an iterator over items in a directory
+///
+/// # Errors
+/// May produce an error if the `Glob` fails to be partitioned.
+/// See [`partitioned`](Glob::partitioned)
+#[inline]
 pub fn walk(
     expression: &str,
     directory: impl AsRef<Path>,
@@ -919,6 +976,8 @@ pub fn walk(
 }
 
 /// Escapes text as a literal glob expression.
+#[inline]
+#[must_use]
 pub fn escape(unescaped: &str) -> Cow<str> {
     const ESCAPE: char = '\\';
 
@@ -931,18 +990,20 @@ pub fn escape(unescaped: &str) -> Cow<str> {
             escaped.push(x);
         }
         escaped.into()
-    }
-    else {
+    } else {
         unescaped.into()
     }
 }
 
 // TODO: Is it possible for `:` and `,` to be contextual meta-characters?
+
 /// Returns `true` if the given character is a meta-character.
 ///
 /// This function does not return `true` for contextual meta-characters that may
 /// only be escaped in particular contexts, such as hyphens `-` in character
 /// class expressions.
+#[inline]
+#[must_use]
 pub const fn is_meta_character(x: char) -> bool {
     matches!(
         x,
@@ -954,6 +1015,8 @@ pub const fn is_meta_character(x: char) -> bool {
 ///
 /// Contextual meta-characters may only be escaped in particular contexts, such
 /// as hyphens `-` in character class expressions.
+#[inline]
+#[must_use]
 pub const fn is_contextual_meta_character(x: char) -> bool {
     matches!(x, '-')
 }
@@ -982,8 +1045,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
         .collect();
     if let Some(tokenized) = tokenized {
         Ok((tokenized, diagnostics))
-    }
-    else {
+    } else {
         Err(diagnostics.try_into().expect("parse failed with no error"))
     }
 }
@@ -1002,24 +1064,20 @@ mod tests {
         let mut adjacent = Option::<i32>::None.into_iter().adjacent();
         assert_eq!(adjacent.next(), None);
 
-        let mut adjacent = Some(0i32).into_iter().adjacent();
-        assert_eq!(adjacent.next(), Some(Adjacency::Only { item: 0 }));
+        let mut adjacent = Some(0_i32).into_iter().adjacent();
+        assert_eq!(adjacent.next(), Some(Adjacency::Only { item: 0_i32 }));
         assert_eq!(adjacent.next(), None);
 
-        let mut adjacent = (0i32..3).adjacent();
+        let mut adjacent = (0_i32..3_i32).adjacent();
         assert_eq!(
             adjacent.next(),
-            Some(Adjacency::First { item: 0, right: 1 })
+            Some(Adjacency::First { item: 0_i32, right: 1_i32 })
         );
         assert_eq!(
             adjacent.next(),
-            Some(Adjacency::Middle {
-                left: 0,
-                item: 1,
-                right: 2
-            })
+            Some(Adjacency::Middle { left: 0_i32, item: 1_i32, right: 2_i32 })
         );
-        assert_eq!(adjacent.next(), Some(Adjacency::Last { left: 1, item: 2 }));
+        assert_eq!(adjacent.next(), Some(Adjacency::Last { left: 1_i32, item: 2_i32 }));
         assert_eq!(adjacent.next(), None);
     }
 

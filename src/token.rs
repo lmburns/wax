@@ -5,12 +5,12 @@ mod supreme {
     //! names to `nom`. Parsers are used via this module such that they resemble
     //! the use of `nom` parsers. See the `parse` function.
 
-    pub use nom_supreme::error::{BaseErrorKind, ErrorTree, Expectation, StackContext};
-    pub use nom_supreme::multi::{
-        collect_separated_terminated as many1, parse_separated_terminated as fold1,
+    pub use nom_supreme::{
+        error::{BaseErrorKind, ErrorTree, StackContext},
+        multi::{collect_separated_terminated as many1, parse_separated_terminated as fold1},
+        parser_ext::ParserExt,
+        tag::complete::tag,
     };
-    pub use nom_supreme::parser_ext::ParserExt;
-    pub use nom_supreme::tag::complete::tag;
 }
 
 use itertools::Itertools as _;
@@ -18,13 +18,15 @@ use itertools::Itertools as _;
 use miette::{self, Diagnostic, LabeledSpan, SourceCode};
 use pori::{Located, Location, Stateful};
 use smallvec::{smallvec, SmallVec};
-use std::borrow::Cow;
-use std::cmp;
-use std::fmt::{self, Display, Formatter};
-use std::mem;
-use std::ops::{Bound, Deref, RangeBounds};
-use std::path::{PathBuf, MAIN_SEPARATOR};
-use std::str::FromStr;
+use std::{
+    borrow::Cow,
+    cmp,
+    fmt::{self, Display, Formatter},
+    mem,
+    ops::{Bound, Deref, RangeBounds},
+    path::{PathBuf, MAIN_SEPARATOR},
+    str::FromStr,
+};
 use supreme::{BaseErrorKind, StackContext};
 use thiserror::Error;
 
@@ -48,14 +50,14 @@ type ErrorMode<'t> = nom::Err<ErrorTree<'t>>;
 #[derive(Clone, Debug)]
 struct ErrorLocation {
     location: usize,
-    context: String,
+    context:  String,
 }
 
 impl<'e, 'i> From<ErrorEntry<'e, Input<'i>>> for ErrorLocation {
     fn from(entry: ErrorEntry<'e, Input<'i>>) -> Self {
-        ErrorLocation {
+        Self {
             location: entry.input.location(),
-            context: entry.context.to_string(),
+            context:  entry.context.to_string(),
         }
     }
 }
@@ -76,8 +78,8 @@ impl Display for ErrorLocation {
 
 #[derive(Clone, Debug)]
 struct ErrorEntry<'e, I> {
-    depth: usize,
-    input: &'e I,
+    depth:   usize,
+    input:   &'e I,
     context: ErrorContext<'e>,
 }
 
@@ -87,7 +89,7 @@ enum ErrorContext<'e> {
     Stack(&'e StackContext),
 }
 
-impl<'e> Display for ErrorContext<'e> {
+impl Display for ErrorContext<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             ErrorContext::Kind(kind) => match kind {
@@ -119,32 +121,22 @@ impl<'i> ErrorTreeExt<Input<'i>> for ErrorTree<'i> {
             F: FnMut(ErrorEntry<Input<'i>>),
         {
             match tree {
-                ErrorTree::Base {
-                    ref location,
-                    ref kind,
-                } => f(ErrorEntry {
-                    depth,
-                    input: location,
-                    context: ErrorContext::Kind(kind),
-                }),
-                ErrorTree::Stack {
-                    ref base,
-                    ref contexts,
-                } => {
+                ErrorTree::Base { ref location, ref kind } =>
+                    f(ErrorEntry { depth, input: location, context: ErrorContext::Kind(kind) }),
+                ErrorTree::Stack { ref base, ref contexts } => {
                     for (location, context) in contexts {
                         f(ErrorEntry {
-                            depth: depth + 1,
-                            input: location,
+                            depth:   depth + 1,
+                            input:   location,
                             context: ErrorContext::Stack(context),
-                        })
+                        });
                     }
                     recurse(base, depth + 1, f);
-                }
-                ErrorTree::Alt(ref trees) => {
+                },
+                ErrorTree::Alt(ref trees) =>
                     for tree in trees {
                         recurse(tree, depth + 1, f);
-                    }
-                }
+                    },
             }
         }
         recurse(self, 0, &mut f);
@@ -178,8 +170,8 @@ impl<'i> ErrorTreeExt<Input<'i>> for ErrorTree<'i> {
 #[error("failed to parse glob expression")]
 pub struct ParseError<'t> {
     expression: Cow<'t, str>,
-    start: ErrorLocation,
-    ends: Vec<ErrorLocation>,
+    start:      ErrorLocation,
+    ends:       Vec<ErrorLocation>,
 }
 
 impl<'t> ParseError<'t> {
@@ -187,7 +179,7 @@ impl<'t> ParseError<'t> {
         match error {
             ErrorMode::Incomplete(_) => {
                 panic!("unexpected parse error: incomplete input")
-            }
+            },
             ErrorMode::Error(error) | ErrorMode::Failure(error) => {
                 let (starts, ends) = error.bounding_error_locations();
                 ParseError {
@@ -198,23 +190,19 @@ impl<'t> ParseError<'t> {
                         .expect("expected lower bound error location"),
                     ends,
                 }
-            }
+            },
         }
     }
 
+    #[inline]
+    #[must_use]
     pub fn into_owned(self) -> ParseError<'static> {
-        let ParseError {
-            expression,
-            start,
-            ends,
-        } = self;
-        ParseError {
-            expression: expression.into_owned().into(),
-            start,
-            ends,
-        }
+        let ParseError { expression, start, ends } = self;
+        ParseError { expression: expression.into_owned().into(), start, ends }
     }
 
+    #[inline]
+    #[must_use]
     pub fn expression(&self) -> &str {
         self.expression.as_ref()
     }
@@ -222,7 +210,7 @@ impl<'t> ParseError<'t> {
 
 #[cfg(feature = "diagnostics-report")]
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-impl<'t> Diagnostic for ParseError<'t> {
+impl Diagnostic for ParseError<'_> {
     fn code<'a>(&'a self) -> Option<Box<dyn Display + 'a>> {
         Some(Box::new("wax::glob::parse"))
     }
@@ -264,7 +252,7 @@ pub trait IntoTokens<'t>: Sized {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ParserState {
-    flags: FlagState,
+    flags:         FlagState,
     subexpression: usize,
 }
 
@@ -275,9 +263,7 @@ struct FlagState {
 
 impl Default for FlagState {
     fn default() -> Self {
-        FlagState {
-            is_case_insensitive: PATHS_ARE_CASE_INSENSITIVE,
-        }
+        Self { is_case_insensitive: PATHS_ARE_CASE_INSENSITIVE }
     }
 }
 
@@ -289,7 +275,7 @@ enum FlagToggle {
 #[derive(Clone, Debug)]
 pub struct Tokenized<'t, A = Annotation> {
     expression: Cow<'t, str>,
-    tokens: Vec<Token<'t, A>>,
+    tokens:     Vec<Token<'t, A>>,
 }
 
 impl<'t, A> Tokenized<'t, A> {
@@ -297,7 +283,7 @@ impl<'t, A> Tokenized<'t, A> {
         let Tokenized { expression, tokens } = self;
         Tokenized {
             expression: expression.into_owned().into(),
-            tokens: tokens.into_iter().map(Token::into_owned).collect(),
+            tokens:     tokens.into_iter().map(Token::into_owned).collect(),
         }
     }
 
@@ -314,7 +300,7 @@ impl<'t, A> Tokenized<'t, A> {
         (prefix, self)
     }
 
-    pub fn expression(&self) -> &Cow<'t, str> {
+    pub const fn expression(&self) -> &Cow<'t, str> {
         &self.expression
     }
 
@@ -334,29 +320,23 @@ impl<'t, A> IntoTokens<'t> for Tokenized<'t, A> {
 
 #[derive(Clone, Debug)]
 pub struct Token<'t, A = Annotation> {
-    kind: TokenKind<'t, A>,
+    kind:       TokenKind<'t, A>,
     annotation: A,
 }
 
 impl<'t, A> Token<'t, A> {
-    fn new(kind: TokenKind<'t, A>, annotation: A) -> Self {
+    const fn new(kind: TokenKind<'t, A>, annotation: A) -> Self {
         Token { kind, annotation }
     }
 
     pub fn into_owned(self) -> Token<'static, A> {
         let Token { kind, annotation } = self;
-        Token {
-            kind: kind.into_owned(),
-            annotation,
-        }
+        Token { kind: kind.into_owned(), annotation }
     }
 
     pub fn unannotate(self) -> Token<'t, ()> {
         let Token { kind, .. } = self;
-        Token {
-            kind: kind.unannotate(),
-            annotation: (),
-        }
+        Token { kind: kind.unannotate(), annotation: () }
     }
 
     pub fn unroot(&mut self) -> bool {
@@ -431,10 +411,7 @@ impl<'t, A> Deref for Token<'t, A> {
 
 impl<'t> From<TokenKind<'t, ()>> for Token<'t, ()> {
     fn from(kind: TokenKind<'t, ()>) -> Self {
-        Token {
-            kind,
-            annotation: (),
-        }
+        Token { kind, annotation: () }
     }
 }
 
@@ -453,13 +430,8 @@ impl<'t, A> TokenKind<'t, A> {
         match self {
             TokenKind::Alternative(alternative) => alternative.into_owned().into(),
             TokenKind::Class(class) => TokenKind::Class(class),
-            TokenKind::Literal(Literal {
-                text,
-                is_case_insensitive,
-            }) => TokenKind::Literal(Literal {
-                text: text.into_owned().into(),
-                is_case_insensitive,
-            }),
+            TokenKind::Literal(Literal { text, is_case_insensitive }) =>
+                TokenKind::Literal(Literal { text: text.into_owned().into(), is_case_insensitive }),
             TokenKind::Repetition(repetition) => repetition.into_owned().into(),
             TokenKind::Separator => TokenKind::Separator,
             TokenKind::Wildcard(wildcard) => TokenKind::Wildcard(wildcard),
@@ -479,9 +451,8 @@ impl<'t, A> TokenKind<'t, A> {
 
     pub fn unroot(&mut self) -> bool {
         match self {
-            TokenKind::Wildcard(Wildcard::Tree { ref mut is_rooted }) => {
-                mem::replace(is_rooted, false)
-            }
+            TokenKind::Wildcard(Wildcard::Tree { ref mut is_rooted }) =>
+                mem::replace(is_rooted, false),
             _ => false,
         }
     }
@@ -497,12 +468,12 @@ impl<'t, A> TokenKind<'t, A> {
         }
     }
 
-    pub fn has_sub_tokens(&self) -> bool {
+    pub const fn has_sub_tokens(&self) -> bool {
         // It is not necessary to detect empty branches or sub-expressions.
         matches!(self, TokenKind::Alternative(_) | TokenKind::Repetition(_))
     }
 
-    pub fn is_component_boundary(&self) -> bool {
+    pub const fn is_component_boundary(&self) -> bool {
         matches!(
             self,
             TokenKind::Separator | TokenKind::Wildcard(Wildcard::Tree { .. })
@@ -510,7 +481,7 @@ impl<'t, A> TokenKind<'t, A> {
     }
 
     #[cfg_attr(not(feature = "diagnostics-inspect"), allow(unused))]
-    pub fn is_capturing(&self) -> bool {
+    pub const fn is_capturing(&self) -> bool {
         use TokenKind::{Alternative, Class, Repetition, Wildcard};
 
         matches!(
@@ -567,7 +538,7 @@ impl<'t, A> Alternative<'t, A> {
         )
     }
 
-    pub fn branches(&self) -> &Vec<Vec<Token<'t, A>>> {
+    pub const fn branches(&self) -> &Vec<Vec<Token<'t, A>>> {
         &self.0
     }
 
@@ -589,8 +560,7 @@ impl<'t, A> Alternative<'t, A> {
         self.0.iter().any(|tokens| {
             tokens
                 .first()
-                .map(|token| token.has_preceding_token_with(f))
-                .unwrap_or(false)
+                .map_or(false, |token| token.has_preceding_token_with(f))
         })
     }
 
@@ -598,8 +568,7 @@ impl<'t, A> Alternative<'t, A> {
         self.0.iter().any(|tokens| {
             tokens
                 .last()
-                .map(|token| token.has_terminating_token_with(f))
-                .unwrap_or(false)
+                .map_or(false, |token| token.has_terminating_token_with(f))
         })
     }
 }
@@ -623,22 +592,21 @@ impl Archetype {
     pub fn to_invariant_string(&self) -> Option<Cow<str>> {
         match self {
             Archetype::Character(x) => (!PATHS_ARE_CASE_INSENSITIVE).then(|| x.to_string().into()),
-            Archetype::Range(a, b) => {
-                ((a == b) && !PATHS_ARE_CASE_INSENSITIVE).then(|| a.to_string().into())
-            }
+            Archetype::Range(a, b) =>
+                ((a == b) && !PATHS_ARE_CASE_INSENSITIVE).then(|| a.to_string().into()),
         }
     }
 }
 
 impl From<char> for Archetype {
-    fn from(literal: char) -> Archetype {
-        Archetype::Character(literal)
+    fn from(literal: char) -> Self {
+        Self::Character(literal)
     }
 }
 
 impl From<(char, char)> for Archetype {
-    fn from(range: (char, char)) -> Archetype {
-        Archetype::Range(range.0, range.1)
+    fn from(range: (char, char)) -> Self {
+        Self::Range(range.0, range.1)
     }
 }
 
@@ -653,7 +621,7 @@ impl Class {
         &self.archetypes
     }
 
-    pub fn is_negated(&self) -> bool {
+    pub const fn is_negated(&self) -> bool {
         self.is_negated
     }
 
@@ -676,11 +644,11 @@ pub enum Evaluation {
 
 #[derive(Clone, Debug)]
 pub struct Literal<'t> {
-    text: Cow<'t, str>,
+    text:                Cow<'t, str>,
     is_case_insensitive: bool,
 }
 
-impl<'t> Literal<'t> {
+impl Literal<'_> {
     pub fn text(&self) -> &str {
         self.text.as_ref()
     }
@@ -689,7 +657,7 @@ impl<'t> Literal<'t> {
         (!self.has_variant_casing()).then(|| self.text.clone())
     }
 
-    pub fn is_case_insensitive(&self) -> bool {
+    pub const fn is_case_insensitive(&self) -> bool {
         self.is_case_insensitive
     }
 
@@ -704,8 +672,8 @@ impl<'t> Literal<'t> {
 #[derive(Clone, Debug)]
 pub struct Repetition<'t, A = ()> {
     tokens: Vec<Token<'t, A>>,
-    lower: usize,
-    step: Option<usize>,
+    lower:  usize,
+    step:   Option<usize>,
 }
 
 impl<'t, A> Repetition<'t, A> {
@@ -721,25 +689,14 @@ impl<'t, A> Repetition<'t, A> {
             Bound::Unbounded => None,
         };
         match upper {
-            Some(upper) => (upper >= lower).then(|| Repetition {
-                tokens,
-                lower,
-                step: Some(upper - lower),
-            }),
-            None => Some(Repetition {
-                tokens,
-                lower,
-                step: None,
-            }),
+            Some(upper) =>
+                (upper >= lower).then(|| Repetition { tokens, lower, step: Some(upper - lower) }),
+            None => Some(Repetition { tokens, lower, step: None }),
         }
     }
 
     pub fn into_owned(self) -> Repetition<'static, A> {
-        let Repetition {
-            tokens,
-            lower,
-            step,
-        } = self;
+        let Repetition { tokens, lower, step } = self;
         Repetition {
             tokens: tokens.into_iter().map(Token::into_owned).collect(),
             lower,
@@ -748,11 +705,7 @@ impl<'t, A> Repetition<'t, A> {
     }
 
     pub fn unannotate(self) -> Repetition<'t, ()> {
-        let Repetition {
-            tokens,
-            lower,
-            step,
-        } = self;
+        let Repetition { tokens, lower, step } = self;
         Repetition {
             tokens: tokens.into_iter().map(|token| token.unannotate()).collect(),
             lower,
@@ -760,7 +713,7 @@ impl<'t, A> Repetition<'t, A> {
         }
     }
 
-    pub fn tokens(&self) -> &Vec<Token<'t, A>> {
+    pub const fn tokens(&self) -> &Vec<Token<'t, A>> {
         &self.tokens
     }
 
@@ -784,15 +737,13 @@ impl<'t, A> Repetition<'t, A> {
     pub fn has_preceding_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
         self.tokens
             .first()
-            .map(|token| token.has_preceding_token_with(f))
-            .unwrap_or(false)
+            .map_or(false, |token| token.has_preceding_token_with(f))
     }
 
     pub fn has_terminating_token_with(&self, f: &mut impl FnMut(&Token<'t, A>) -> bool) -> bool {
         self.tokens
             .last()
-            .map(|token| token.has_terminating_token_with(f))
-            .unwrap_or(false)
+            .map_or(false, |token| token.has_terminating_token_with(f))
     }
 }
 
@@ -819,9 +770,12 @@ impl<'i, 't> LiteralSequence<'i, 't> {
 
     pub fn text(&self) -> Cow<'t, str> {
         if self.literals().len() == 1 {
-            self.literals().first().unwrap().text.clone()
-        }
-        else {
+            self.literals()
+                .first()
+                .expect("failed to get first item")
+                .text
+                .clone()
+        } else {
             self.literals()
                 .iter()
                 .map(|literal| &literal.text)
@@ -887,7 +841,7 @@ where
     I::Item: IntoIterator<Item = Token<'t, A>>,
 {
     Token {
-        kind: Alternative(
+        kind:       Alternative(
             tokens
                 .into_iter()
                 .map(|tokens| tokens.into_iter().map(|token| token.unannotate()).collect())
@@ -935,8 +889,7 @@ where
     components(tokens).flat_map(|component| {
         if let Some(literal) = component.literal() {
             vec![(component, literal)]
-        }
-        else {
+        } else {
             component
                 .tokens()
                 .iter()
@@ -949,9 +902,8 @@ where
                             .flatten()
                             .collect::<Vec<_>>(),
                     ),
-                    TokenKind::Repetition(ref repetition) => {
-                        Some(literals(repetition.tokens()).collect::<Vec<_>>())
-                    }
+                    TokenKind::Repetition(ref repetition) =>
+                        Some(literals(repetition.tokens()).collect::<Vec<_>>()),
                     _ => None,
                 })
                 .flatten()
@@ -989,46 +941,52 @@ where
     );
     if prefix.is_empty() {
         None
-    }
-    else {
+    } else {
         Some(prefix.into())
     }
 }
 
-pub fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
-    use crate::token::TokenKind::{Separator, Wildcard};
-    use crate::token::Wildcard::Tree;
+pub(crate) fn invariant_prefix_upper_bound<A>(tokens: &[Token<A>]) -> usize {
+    use crate::token::{
+        TokenKind::{Separator, Wildcard},
+        Wildcard::Tree,
+    };
 
     let mut separator = None;
     for (n, token) in tokens.iter().map(Token::kind).enumerate() {
         match token {
             Separator => {
                 separator = Some(n);
-            }
+            },
             Wildcard(Tree { .. }) => {
                 return n;
-            }
+            },
             _ => {
                 // TODO: This may be expensive.
                 if token.to_invariant_string().is_some() {
                     continue;
                 }
-                else {
-                    return match separator {
-                        Some(n) => n + 1,
-                        None => 0,
-                    };
-                }
-            }
+                return match separator {
+                    Some(n) => n + 1,
+                    None => 0,
+                };
+            },
         }
     }
     tokens.len()
 }
 
-pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
-    use nom::bytes::complete as bytes;
-    use nom::character::complete as character;
-    use nom::{branch, combinator, multi, sequence, IResult, Parser};
+pub(crate) fn parse(expression: &str) -> Result<Tokenized, ParseError> {
+    use nom::{
+        branch,
+        bytes::complete as bytes,
+        character::complete as character,
+        combinator,
+        multi,
+        sequence,
+        IResult,
+        Parser,
+    };
     use supreme::ParserExt;
 
     use crate::token::FlagToggle::CaseInsensitive;
@@ -1044,18 +1002,18 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     fn boe(input: Input) -> ParseResult<Input> {
         if input.state.subexpression == input.location() {
             Ok((input, input))
-        }
-        else {
+        } else {
             Err(ErrorMode::Error(ErrorTree::Base {
                 location: input,
-                kind: BaseErrorKind::External(Box::new(Expectation {
+                kind:     BaseErrorKind::External(Box::new(Expectation {
                     subject: "beginning of expression",
                 })),
             }))
         }
     }
 
-    fn identity(input: Input) -> ParseResult<Input> {
+    #[allow(clippy::unnecessary_wraps)]
+    const fn identity(input: Input) -> ParseResult<Input> {
         Ok((input, input))
     }
 
@@ -1086,7 +1044,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                 match toggle {
                     CaseInsensitive(toggle) => {
                         input.state.flags.is_case_insensitive = toggle;
-                    }
+                    },
                 }
                 Ok((input, ()))
             }
@@ -1125,7 +1083,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
             ),
             move |text| {
                 TokenKind::Literal(Literal {
-                    text: text.into(),
+                    text:                text.into(),
                     is_case_insensitive: input.state.flags.is_case_insensitive,
                 })
             },
@@ -1292,13 +1250,7 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
                 sequence::tuple((combinator::opt(supreme::tag("!")), archetypes)),
                 supreme::tag("]"),
             ),
-            |(negation, archetypes)| {
-                Class {
-                    is_negated: negation.is_some(),
-                    archetypes,
-                }
-                .into()
-            },
+            |(negation, archetypes)| Class { is_negated: negation.is_some(), archetypes }.into(),
         )(input)
     }
 
@@ -1370,20 +1322,13 @@ pub fn parse(expression: &str) -> Result<Tokenized, ParseError> {
     }
 
     if expression.is_empty() {
-        Ok(Tokenized {
-            expression: expression.into(),
-            tokens: vec![],
-        })
-    }
-    else {
+        Ok(Tokenized { expression: expression.into(), tokens: vec![] })
+    } else {
         let input = Input::new(Expression::from(expression), ParserState::default());
         let tokens = combinator::all_consuming(glob(combinator::eof))(input)
             .map(|(_, tokens)| tokens)
             .map_err(|error| ParseError::new(expression, error))?;
-        Ok(Tokenized {
-            expression: expression.into(),
-            tokens,
-        })
+        Ok(Tokenized { expression: expression.into(), tokens })
     }
 }
 
