@@ -23,16 +23,21 @@ use thiserror::Error;
 
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{CompositeSourceSpan, CorrelatedSourceSpan, SourceSpanExt as _};
-use crate::token::{Token, TokenKind, Tokenized};
-use crate::{IteratorExt as _, SliceExt as _, Terminals};
+use crate::{
+    token::{Token, TokenKind, Tokenized},
+    IteratorExt as _,
+    SliceExt as _,
+    Terminals,
+};
 
 #[derive(Debug, Error)]
 #[error("malformed glob expression: {kind}")]
+#[allow(clippy::module_name_repetitions)]
 pub struct RuleError<'t> {
     expression: Cow<'t, str>,
-    kind: ErrorKind,
+    kind:       ErrorKind,
     #[cfg(feature = "diagnostics-report")]
-    span: CompositeSourceSpan,
+    span:       CompositeSourceSpan,
 }
 
 impl<'t> RuleError<'t> {
@@ -66,6 +71,7 @@ impl<'t> RuleError<'t> {
         }
     }
 
+    /// Return the inner expression
     #[inline]
     #[must_use]
     pub fn expression(&self) -> &str {
@@ -134,16 +140,19 @@ fn boundary<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 SourceSpan::from(left).union(&SourceSpan::from(right)),
             ),
         ))
-    }
-    else {
+    } else {
         Ok(())
     }
 }
 
 fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
-    use crate::token::TokenKind::{Separator, Wildcard};
-    use crate::token::Wildcard::{Tree, ZeroOrMore};
-    use crate::Terminals::{Only, StartEnd};
+    use crate::{
+        token::{
+            TokenKind::{Separator, Wildcard},
+            Wildcard::{Tree, ZeroOrMore},
+        },
+        Terminals::{Only, StartEnd},
+    };
 
     struct CorrelatedError {
         kind: ErrorKind,
@@ -153,7 +162,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 
     impl CorrelatedError {
         #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
-        const fn new(kind: ErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
+        fn new(kind: ErrorKind, outer: Option<&Token>, inner: &Token) -> Self {
             CorrelatedError {
                 kind,
                 #[cfg(feature = "diagnostics-report")]
@@ -167,58 +176,54 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
 
     #[derive(Clone, Copy, Default)]
     struct Outer<'i, 't> {
-        left: Option<&'i Token<'t>>,
+        left:  Option<&'i Token<'t>>,
         right: Option<&'i Token<'t>>,
     }
 
     impl<'i, 't> Outer<'i, 't> {
-        pub fn push(self, left: Option<&'i Token<'t>>, right: Option<&'i Token<'t>>) -> Self {
-            Outer {
-                left: left.or(self.left),
-                right: right.or(self.right),
-            }
+        pub(crate) fn push(
+            self,
+            left: Option<&'i Token<'t>>,
+            right: Option<&'i Token<'t>>,
+        ) -> Self {
+            Outer { left: left.or(self.left), right: right.or(self.right) }
         }
     }
 
     fn has_preceding_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token
-            .map(|token| token.has_preceding_token_with(&mut |token| token.is_component_boundary()))
-            .unwrap_or(false)
+        token.map_or(false, |token| {
+            token.has_preceding_token_with(&mut |token| token.is_component_boundary())
+        })
     }
 
     fn has_terminating_component_boundary<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token
-            .map(|token| {
-                token.has_terminating_token_with(&mut |token| token.is_component_boundary())
-            })
-            .unwrap_or(false)
+        token.map_or(false, |token| {
+            token.has_terminating_token_with(&mut |token| token.is_component_boundary())
+        })
     }
 
     fn has_preceding_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token
-            .map(|token| {
-                token.has_preceding_token_with(&mut |token| {
-                    matches!(token.kind(), Wildcard(ZeroOrMore(_)))
-                })
+        token.map_or(false, |token| {
+            token.has_preceding_token_with(&mut |token| {
+                matches!(token.kind(), Wildcard(ZeroOrMore(_)))
             })
-            .unwrap_or(false)
+        })
     }
 
     fn has_terminating_zom_token<'t>(token: Option<&'t Token<'t>>) -> bool {
-        token
-            .map(|token| {
-                token.has_terminating_token_with(&mut |token| {
-                    matches!(token.kind(), Wildcard(ZeroOrMore(_)))
-                })
+        token.map_or(false, |token| {
+            token.has_terminating_token_with(&mut |token| {
+                matches!(token.kind(), Wildcard(ZeroOrMore(_)))
             })
-            .unwrap_or(false)
+        })
     }
 
+    #[allow(clippy::ptr_arg)]
     #[cfg_attr(not(feature = "diagnostics-report"), allow(unused))]
     fn diagnose<'i, 't>(
         // This is a somewhat unusual API, but it allows the lifetime `'t` of
         // the `Cow` to be properly forwarded to output values (`RuleError`).
-        #[allow(clippy::ptr_arg)] expression: &'i Cow<'t, str>,
+        expression: &'i Cow<'t, str>,
         token: &'i Token<'t>,
         label: &'static str,
     ) -> impl 'i + Copy + Fn(CorrelatedError) -> RuleError<'t>
@@ -243,21 +248,21 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
         }
     }
 
-    fn recurse<'i, 't, I>(
+    #[allow(clippy::ptr_arg)]
+    fn recurse<'i, 't: 'i, I>(
         // This is a somewhat unusual API, but it allows the lifetime `'t` of
         // the `Cow` to be properly forwarded to output values (`RuleError`).
-        #[allow(clippy::ptr_arg)] expression: &Cow<'t, str>,
+        expression: &Cow<'t, str>,
         tokens: I,
         outer: Outer<'i, 't>,
     ) -> Result<(), RuleError<'t>>
     where
         I: IntoIterator<Item = &'i Token<'t>>,
-        't: 'i,
     {
         for (left, token, right) in tokens
             .into_iter()
             .adjacent()
-            .map(|adjacency| adjacency.into_tuple())
+            .map(super::Adjacency::into_tuple)
         {
             match token.kind() {
                 TokenKind::Alternative(ref alternative) => {
@@ -270,7 +275,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                         }
                         recurse(expression, tokens.iter(), outer)?;
                     }
-                }
+                },
                 TokenKind::Repetition(ref repetition) => {
                     let outer = outer.push(left, right);
                     let diagnose = diagnose(expression, token, "in this repetition");
@@ -281,8 +286,11 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                             .map_err(diagnose)?;
                     }
                     recurse(expression, tokens.iter(), outer)?;
-                }
-                _ => {}
+                },
+                TokenKind::Class(_)
+                | TokenKind::Literal(_)
+                | TokenKind::Separator
+                | TokenKind::Wildcard(_) => {},
             }
         }
         Ok(())
@@ -300,58 +308,49 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // For example, `foo/{bar,/}`.
             Only((inner, Separator)) | StartEnd((inner, Separator), _)
                 if has_terminating_component_boundary(left) =>
-            {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
                     left,
                     inner,
-                ))
-            }
+                )),
             // The group is followed by component boundaries; disallow trailing
             // separators.
             //
             // For example, `{foo,/}/bar`.
             Only((inner, Separator)) | StartEnd(_, (inner, Separator))
                 if has_preceding_component_boundary(right) =>
-            {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
                     right,
                     inner,
-                ))
-            }
+                )),
             // Disallow singular tree tokens.
             //
             // For example, `{foo,bar,**}`.
-            Only((inner, Wildcard(Tree { .. }))) => {
-                Err(CorrelatedError::new(ErrorKind::SingularTree, None, inner))
-            }
+            Only((inner, Wildcard(Tree { .. }))) =>
+                Err(CorrelatedError::new(ErrorKind::SingularTree, None, inner)),
             // The group is preceded by component boundaries; disallow leading
             // tree tokens.
             //
             // For example, `foo/{bar,**/baz}`.
             StartEnd((inner, Wildcard(Tree { .. })), _)
                 if has_terminating_component_boundary(left) =>
-            {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
                     left,
                     inner,
-                ))
-            }
+                )),
             // The group is followed by component boundaries; disallow trailing
             // tree tokens.
             //
             // For example, `{foo,bar/**}/baz`.
             StartEnd(_, (inner, Wildcard(Tree { .. })))
                 if has_preceding_component_boundary(right) =>
-            {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
                     right,
                     inner,
-                ))
-            }
+                )),
             // The group is prefixed by a zero-or-more token; disallow leading
             // zero-or-more tokens.
             //
@@ -359,13 +358,11 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             Only((inner, Wildcard(ZeroOrMore(_))))
             | StartEnd((inner, Wildcard(ZeroOrMore(_))), _)
                 if has_terminating_zom_token(left) =>
-            {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentZeroOrMore,
                     left,
                     inner,
-                ))
-            }
+                )),
             // The group is followed by a zero-or-more token; disallow trailing
             // zero-or-more tokens.
             //
@@ -373,14 +370,12 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             Only((inner, Wildcard(ZeroOrMore(_))))
             | StartEnd(_, (inner, Wildcard(ZeroOrMore(_))))
                 if has_preceding_zom_token(right) =>
-            {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentZeroOrMore,
                     right,
                     inner,
-                ))
-            }
-            _ => Ok(()),
+                )),
+            Only(_) | StartEnd(..) => Ok(()),
         }
     }
 
@@ -394,9 +389,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // sub-globs.
             //
             // For example, `{foo,/}` or `{foo,/bar}`.
-            Only((inner, Separator)) | StartEnd((inner, Separator), _) if left.is_none() => {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
-            }
+            Only((inner, Separator)) | StartEnd((inner, Separator), _) if left.is_none() =>
+                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner)),
             // The alternative is preceded by a termination; disallow rooted
             // sub-globs.
             //
@@ -404,10 +398,8 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             Only((inner, Wildcard(Tree { is_rooted: true })))
             | StartEnd((inner, Wildcard(Tree { is_rooted: true })), _)
                 if left.is_none() =>
-            {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
-            }
-            _ => Ok(()),
+                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner)),
+            Only(_) | StartEnd(..) => Ok(()),
         }
     }
 
@@ -425,9 +417,7 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             // For example, `</foo:0,>`.
             Only((inner, Separator)) | StartEnd((inner, Separator), _)
                 if left.is_none() && lower == 0 =>
-            {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
-            }
+                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner)),
             // The repetition is preceded by a termination; disallow rooted
             // sub-globs with a zero lower bound.
             //
@@ -435,21 +425,17 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
             Only((inner, Wildcard(Tree { is_rooted: true })))
             | StartEnd((inner, Wildcard(Tree { is_rooted: true })), _)
                 if left.is_none() && lower == 0 =>
-            {
-                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner))
-            }
+                Err(CorrelatedError::new(ErrorKind::RootedSubGlob, left, inner)),
             // The repetition begins and ends with a separator.
             //
             // For example, `</foo/bar/:1,>`.
             StartEnd((left, _), (right, _))
                 if left.is_component_boundary() && right.is_component_boundary() =>
-            {
                 Err(CorrelatedError::new(
                     ErrorKind::AdjacentBoundary,
                     Some(left),
                     right,
-                ))
-            }
+                )),
             // The repetition is a singular separator.
             //
             // For example, `</:1,>`.
@@ -466,13 +452,9 @@ fn group<'t>(tokenized: &Tokenized<'t>) -> Result<(), RuleError<'t>> {
                 None,
                 token,
             )),
-            _ => Ok(()),
+            Only(_) | StartEnd(..) => Ok(()),
         }
     }
 
-    recurse(
-        tokenized.expression(),
-        tokenized.tokens(),
-        Default::default(),
-    )
+    recurse(tokenized.expression(), tokenized.tokens(), Outer::default())
 }

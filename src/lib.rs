@@ -9,6 +9,7 @@
     html_logo_url = "https://raw.githubusercontent.com/olson-sean-k/wax/master/doc/wax.svg?sanitize=true"
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod capture;
 mod diagnostics;
 mod encode;
@@ -49,11 +50,14 @@ pub use crate::diagnostics::report::{DiagnosticGlob, DiagnosticResult, Diagnosti
 pub use crate::diagnostics::Span;
 pub use crate::{capture::MatchedText, rule::RuleError, token::ParseError};
 
+/// Determine whether the file-system detects case-sensitivity in file names
 #[cfg(windows)]
 const PATHS_ARE_CASE_INSENSITIVE: bool = true;
+/// Determine whether the file-system detects case-sensitivity in file names
 #[cfg(not(windows))]
 const PATHS_ARE_CASE_INSENSITIVE: bool = false;
 
+/// Extend a `Result` by allowing an `expect_encoding` function
 trait ResultExt<T, E> {
     fn expect_encoding(self) -> T;
 }
@@ -522,7 +526,7 @@ impl<'t> Glob<'t> {
                         // `depth` is relative to the input `directory`, so count
                         // any components added by an invariant prefix path from the
                         // glob.
-                        let depth = depth - cmp::min(depth, prefix.components().count());
+                        let depth = depth.saturating_sub(prefix.components().count());
                         (root, directory.into(), depth)
                     }
                 },
@@ -551,6 +555,12 @@ impl<'t> Glob<'t> {
         inspect::captures(self.tokenized.tokens())
     }
 
+    /// Test whether the [`Glob`] contains a pattern that is not literal
+    ///
+    ///  - Wildcards: `*` | `?`
+    ///  - Character classes: `[...]`
+    ///  - Alternatives: `{...,...}`
+    ///  - Repetitions: `<...:...>`
     #[inline]
     #[must_use]
     pub fn is_invariant(&self) -> bool {
@@ -561,6 +571,10 @@ impl<'t> Glob<'t> {
             .all(|token| token.to_invariant_string().is_some())
     }
 
+    /// Test whether the [`Glob`] contains an explicit pattern that expands to the
+    /// current directory. This is usually equivalent to testing whether a
+    /// path-separator is present; however, if the pattern is blank, the `Glob`
+    /// is also considered to be 'rooted'
     #[inline]
     #[must_use]
     pub fn has_root(&self) -> bool {
@@ -570,6 +584,9 @@ impl<'t> Glob<'t> {
             .map_or(false, Token::is_rooted)
     }
 
+    /// Test whether the [`Glob`] contains literals. That is, a section of the
+    /// glob--either by itself or in-between a path-separator--that does not
+    /// contain any special characters that do any expanding
     #[inline]
     #[must_use]
     pub fn has_semantic_literals(&self) -> bool {
@@ -1077,7 +1094,10 @@ mod tests {
             adjacent.next(),
             Some(Adjacency::Middle { left: 0_i32, item: 1_i32, right: 2_i32 })
         );
-        assert_eq!(adjacent.next(), Some(Adjacency::Last { left: 1_i32, item: 2_i32 }));
+        assert_eq!(
+            adjacent.next(),
+            Some(Adjacency::Last { left: 1_i32, item: 2_i32 })
+        );
         assert_eq!(adjacent.next(), None);
     }
 

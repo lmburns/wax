@@ -1,26 +1,30 @@
 #![cfg(feature = "diagnostics-inspect")]
 
-use crate::diagnostics::Span;
-use crate::token::Token;
+use crate::{diagnostics::Span, token::Token};
 
+/// Struct containing the `index` at which the token is found and the indexes of
+/// the `span` the text covers
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
 #[derive(Clone, Copy, Debug)]
 pub struct CapturingToken {
     index: usize,
-    span: Span,
+    span:  Span,
 }
 
 impl CapturingToken {
+    /// Return the index of the capturing token
     pub fn index(&self) -> usize {
         self.index
     }
 
+    /// Return the indexes spanned by the capturing token
     pub fn span(&self) -> Span {
         self.span
     }
 }
 
-pub fn captures<'t, I>(tokens: I) -> impl 't + Clone + Iterator<Item = CapturingToken>
+/// Return an iterator containing capturing tokens
+pub(crate) fn captures<'t, I>(tokens: I) -> impl 't + Clone + Iterator<Item = CapturingToken>
 where
     I: IntoIterator<Item = &'t Token<'t>>,
     I::IntoIter: 't + Clone,
@@ -29,10 +33,7 @@ where
         .into_iter()
         .filter(|token| token.is_capturing())
         .enumerate()
-        .map(|(index, token)| CapturingToken {
-            index: index + 1,
-            span: *token.annotation(),
-        })
+        .map(|(index, token)| CapturingToken { index: index + 1, span: *token.annotation() })
 }
 
 // These tests use `Glob` APIs, which simply wrap functions in this module.

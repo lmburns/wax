@@ -8,14 +8,14 @@ struct OwnedText {
 }
 
 impl OwnedText {
+    /// Return the currently owned text
     pub(crate) fn get(&self, index: usize) -> Option<&str> {
         if index == 0 {
             Some(self.matched.as_ref())
         } else {
             self.ranges
                 .get(index - 1)
-                .map(|range| range.map(|range| &self.matched[range.0..range.1]))
-                .flatten()
+                .and_then(|range| range.map(|range| &self.matched[range.0..range.1]))
         }
     }
 }
@@ -26,6 +26,7 @@ impl<'t> From<BorrowedText<'t>> for OwnedText {
     }
 }
 
+#[allow(clippy::fallible_impl_from)]
 impl<'m, 't> From<&'m BorrowedText<'t>> for OwnedText {
     fn from(captures: &'m BorrowedText<'t>) -> Self {
         let matched = captures.get(0).unwrap().as_str().into();
@@ -72,12 +73,14 @@ impl From<OwnedText> for MaybeOwnedText<'static> {
     }
 }
 
+/// Text that matches the given [`Glob`] pattern
 #[derive(Debug)]
 pub struct MatchedText<'t> {
     inner: MaybeOwnedText<'t>,
 }
 
 impl MatchedText<'_> {
+    /// Change the inner text to an owned instance
     #[inline]
     #[must_use]
     pub fn into_owned(self) -> MatchedText<'static> {

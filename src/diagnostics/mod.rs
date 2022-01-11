@@ -1,7 +1,7 @@
 #![cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 
-pub mod inspect;
-pub mod report;
+pub(crate) mod inspect;
+pub(crate) mod report;
 
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
-pub type Span = (usize, usize);
+pub(crate) type Span = (usize, usize);

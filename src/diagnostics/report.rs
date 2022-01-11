@@ -132,6 +132,7 @@ impl From<SourceSpan> for CorrelatedSourceSpan {
     }
 }
 
+#[allow(single_use_lifetimes)]
 #[derive(Clone, Debug, Diagnostic, Error)]
 #[diagnostic(code(wax::glob::semantic_literal), severity(warning))]
 #[error("`{literal}` has been interpreted as a literal with no semantics")]
@@ -143,6 +144,7 @@ pub struct SemanticLiteralWarning<'t> {
     span: SourceSpan,
 }
 
+#[allow(single_use_lifetimes)]
 #[derive(Clone, Debug, Diagnostic, Error)]
 #[diagnostic(code(wax::glob::terminating_separator), severity(warning))]
 #[error("terminating separator may discard matches")]
@@ -153,6 +155,7 @@ pub struct TerminatingSeparatorWarning<'t> {
     span: SourceSpan,
 }
 
+#[allow(trivial_casts)]
 pub fn diagnostics<'i, 't>(
     tokenized: &'i Tokenized<'t>,
 ) -> impl 'i + Iterator<Item = BoxedDiagnostic<'t>> {
