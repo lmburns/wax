@@ -12,6 +12,55 @@ boundaries.
 [![docs.rs](https://img.shields.io/badge/docs.rs-wax-66c2a5?logo=rust&style=for-the-badge)](https://docs.rs/wax)
 [![crates.io](https://img.shields.io/crates/v/wax.svg?logo=rust&style=for-the-badge)](https://crates.io/crates/wax)
 
+## Goal of Fork
+- Become more like `zsh` extended globs
+
+### [Glob Operators](https://zsh.sourceforge.io/Doc/Release/Expansion.html#Glob-Operators)
+- `#` represents 0 or more
+- `##` represents 1 or more
+- `^` negates pattern (including things not in character classes)
+- `x~y` match everything that matches `x` but not `y`
+- `<n-m>` match a digit
+- `[^...] | [!...]` negate a character class
+
+### [Glob Flags](https://zsh.sourceforge.io/Doc/Release/Expansion.html#Globbing-Flags)
+- Use `(#i)` syntax to activate flags
+    - `i` = Case insensitive
+    - `I` = Case sensitive
+    - `l` = Lower case the characters
+    - `b` = Activate backreferences (may be very difficult)
+    - `B` = Deactivate backreferences (may be very difficult)
+    - `cN,M` = Same as `<..:N,M>` now
+    - `aN` = Where `N` is the number of allowed errors. See [approximate matching](https://zsh.sourceforge.io/Doc/Release/Expansion.html#Approximate-Matching)
+    - `s` = Match start of text (similar to `^` regex)
+    - `e` = Match end of text (similar to `$` regex)
+    - `q` = Turn off matching, used for **qualifiers** (See below)
+
+[Glob Qualifiers](https://zsh.sourceforge.io/Doc/Release/Expansion.html#Glob-Qualifiers)
+- `/` = match directories
+- `.` = match plain files
+- `*` = match executable files
+- `fSPEC` = match `SPEC` permissions
+- `l[-|+]ct` = match files having a link count greater/less than
+- `U` = match files owned by `UID`
+- `G` = match files owned by `GID`
+- `m[Mwhms][-|+]n` match files modification time
+- `c[Mwhms][-|+]n` match files creation time
+- `a[Mwhms][-|+]n` match files access time
+- `L[+|-]n` match file size in bytes
+- `^` negates all qualifiers following it
+- `-` toggles acting on symlinks vs files
+- `oc` how files are sorted
+    - If c is:
+        - `n` = name
+        - `L` = size (length)
+        - `l` = links
+        - `a` = access time
+        - `c` = creation time
+        - `m` = modification time
+        - `d` = directories first
+- `Oc` like `o` but reverse
+
 ## Basic Usage
 
 Match a path against a glob:
