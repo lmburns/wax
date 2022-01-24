@@ -28,3 +28,6 @@ struct_lit_width             = 60
 struct_variant_width         = 60
 
 combine_control_expr         = true # foo!(if x {...
+
+# Similar to Perltidy
+# control_brace_style = "ClosingNextLine"
