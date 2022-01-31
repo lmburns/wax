@@ -9,7 +9,7 @@ use vec1::Vec1;
 
 use crate::token::{self, TokenKind, Tokenized};
 
-pub type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
+pub(crate) type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
 
 /// `Result` that includes diagnostics on both success and failure.
 ///
@@ -61,7 +61,7 @@ pub trait DiagnosticGlob<'t>: Sized {
     fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)>;
 }
 
-pub trait SourceSpanExt {
+pub(crate) trait SourceSpanExt {
     fn union(&self, other: &SourceSpan) -> SourceSpan;
 }
 
@@ -74,20 +74,20 @@ impl SourceSpanExt for SourceSpan {
 }
 
 #[derive(Clone, Debug)]
-pub struct CompositeSourceSpan {
+pub(crate) struct CompositeSourceSpan {
     label: Option<&'static str>,
     kind: CompositeKind,
 }
 
 impl CompositeSourceSpan {
-    pub fn span(label: Option<&'static str>, span: SourceSpan) -> Self {
+    pub(crate) fn span(label: Option<&'static str>, span: SourceSpan) -> Self {
         CompositeSourceSpan {
             label,
             kind: CompositeKind::Span(span),
         }
     }
 
-    pub fn correlated(
+    pub(crate) fn correlated(
         label: Option<&'static str>,
         span: SourceSpan,
         correlated: CorrelatedSourceSpan,
@@ -98,7 +98,7 @@ impl CompositeSourceSpan {
         }
     }
 
-    pub fn labels(&self) -> Vec<LabeledSpan> {
+    pub(crate) fn labels(&self) -> Vec<LabeledSpan> {
         let label = self.label.map(|label| label.to_string());
         match self.kind {
             CompositeKind::Span(ref span) => vec![LabeledSpan::new_with_span(label, span.clone())],
@@ -124,13 +124,13 @@ enum CompositeKind {
 }
 
 #[derive(Clone, Debug)]
-pub enum CorrelatedSourceSpan {
+pub(crate) enum CorrelatedSourceSpan {
     Contiguous(SourceSpan),
     Split(SourceSpan, SourceSpan),
 }
 
 impl CorrelatedSourceSpan {
-    pub fn split_some(left: Option<SourceSpan>, right: SourceSpan) -> Self {
+    pub(crate) fn split_some(left: Option<SourceSpan>, right: SourceSpan) -> Self {
         if let Some(left) = left {
             CorrelatedSourceSpan::Split(left, right)
         }
@@ -139,7 +139,7 @@ impl CorrelatedSourceSpan {
         }
     }
 
-    pub fn labels(&self) -> Vec<LabeledSpan> {
+    pub(crate) fn labels(&self) -> Vec<LabeledSpan> {
         let label = Some("here".to_string());
         match self {
             CorrelatedSourceSpan::Contiguous(ref span) => {
@@ -163,7 +163,7 @@ impl From<SourceSpan> for CorrelatedSourceSpan {
 #[derive(Clone, Debug, Diagnostic, Error)]
 #[diagnostic(code(wax::glob::semantic_literal), severity(warning))]
 #[error("`{literal}` has been interpreted as a literal with no semantics")]
-pub struct SemanticLiteralWarning<'t> {
+pub(crate) struct SemanticLiteralWarning<'t> {
     #[source_code]
     expression: Cow<'t, str>,
     literal: Cow<'t, str>,
@@ -175,7 +175,7 @@ pub struct SemanticLiteralWarning<'t> {
 #[derive(Clone, Debug, Diagnostic, Error)]
 #[diagnostic(code(wax::glob::terminating_separator), severity(warning))]
 #[error("terminating separator may discard matches")]
-pub struct TerminatingSeparatorWarning<'t> {
+pub(crate) struct TerminatingSeparatorWarning<'t> {
     #[source_code]
     expression: Cow<'t, str>,
     #[label("here")]
@@ -183,7 +183,7 @@ pub struct TerminatingSeparatorWarning<'t> {
 }
 
 #[allow(trivial_casts)]
-pub fn diagnostics<'i, 't>(
+pub(crate) fn diagnostics<'i, 't>(
     tokenized: &'i Tokenized<'t>,
 ) -> impl 'i + Iterator<Item = BoxedDiagnostic<'t>> {
     None.into_iter()

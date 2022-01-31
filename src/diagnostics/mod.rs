@@ -23,4 +23,4 @@ pub(crate) mod report;
 /// }
 /// ```
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
-pub(crate) type Span = (usize, usize);
+pub type Span = (usize, usize);
