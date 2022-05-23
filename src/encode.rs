@@ -1,9 +1,15 @@
 use const_format::formatcp;
 use itertools::{Itertools as _, Position};
-use regex::Regex;
+#[cfg(feature = "diagnostics-report")]
+use miette::Diagnostic;
+use regex::{Error as RegexError, Regex};
 use std::borrow::{Borrow, Cow};
+#[cfg(feature = "diagnostics-report")]
+use std::fmt::Display;
+use thiserror::Error;
 
-use crate::{token::Token, PositionExt as _};
+use crate::token::Token;
+use crate::PositionExt as _;
 
 #[cfg(windows)]
 const SEPARATOR_CLASS_EXPRESSION: &str = "/\\\\";
@@ -49,7 +55,40 @@ macro_rules! nsepexpr {
     };
 }
 
-/// Trait to allow for a method that escapes meta characters
+/// Describes errors that occur when compiling a glob expression.
+///
+/// **This error only occurs when the size of the compiled program is too
+/// large.** All other compilation errors are considered internal bugs and will
+/// panic.
+///
+/// When the `diagnostics-report` feature is enabled, this error implements the
+/// [`Diagnostic`] trait and provides more detailed information about the
+/// compilation failure.
+///
+/// [`Diagnostic`]: miette::Diagnostic
+#[derive(Clone, Debug, Error)]
+#[error("failed to compile glob: {kind}")]
+pub struct CompileError {
+    kind: ErrorKind,
+}
+
+#[derive(Clone, Copy, Debug, Error)]
+#[non_exhaustive]
+enum ErrorKind {
+    #[error("oversized program")]
+    OversizedProgram,
+}
+
+#[cfg(feature = "diagnostics-report")]
+#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+impl Diagnostic for CompileError {
+    fn code<'a>(&'a self) -> Option<Box<dyn 'a + Display>> {
+        Some(Box::new(String::from(match self.kind {
+            ErrorKind::OversizedProgram => "wax::glob::oversized_program",
+        })))
+    }
+}
+
 trait Escaped {
     fn escaped(&self) -> String;
 }
@@ -66,22 +105,18 @@ impl Escaped for str {
     }
 }
 
-/// Grouping type of pattern
 #[derive(Clone, Copy, Debug)]
 enum Grouping {
-    /// A capturing group to later be used as backreferences
     Capture,
-    /// A group to capture but not to be used as backreferences
     NonCapture,
 }
 
 impl Grouping {
-    pub(crate) fn push_str(self, pattern: &mut String, encoding: &str) {
+    pub fn push_str(&self, pattern: &mut String, encoding: &str) {
         self.push_with(pattern, || encoding.into());
     }
 
-    /// Push a group onto the `pattern` string
-    pub(crate) fn push_with<'p, F>(self, pattern: &mut String, f: F)
+    pub fn push_with<'p, F>(&self, pattern: &mut String, f: F)
     where
         F: Fn() -> Cow<'p, str>,
     {
@@ -94,9 +129,18 @@ impl Grouping {
     }
 }
 
-/// Compile the tokens into a [`Regex`]
-#[allow(single_use_lifetimes)]
-pub(crate) fn compile<'t, A, T>(tokens: impl IntoIterator<Item = T>) -> Regex
+pub fn case_folded_eq(left: &str, right: &str) -> bool {
+    let regex = Regex::new(&format!("(?i){}", regex::escape(left)))
+        .expect("failed to compile literal regular expression");
+    if let Some(matched) = regex.find(right) {
+        matched.start() == 0 && matched.end() == right.len()
+    }
+    else {
+        false
+    }
+}
+
+pub fn compile<'t, A, T>(tokens: impl IntoIterator<Item = T>) -> Result<Regex, CompileError>
 where
     T: Borrow<Token<'t, A>>,
 {
@@ -104,10 +148,14 @@ where
     pattern.push('^');
     encode(Grouping::Capture, None, &mut pattern, tokens);
     pattern.push('$');
-    Regex::new(&pattern).expect("glob compilation failed")
+    Regex::new(&pattern).map_err(|error| match error {
+        RegexError::CompiledTooBig(_) => CompileError {
+            kind: ErrorKind::OversizedProgram,
+        },
+        _ => panic!("failed to compile glob"),
+    })
 }
 
-#[allow(single_use_lifetimes)]
 fn encode<'t, A, T>(
     grouping: Grouping,
     superposition: Option<Position<()>>,
@@ -118,12 +166,10 @@ fn encode<'t, A, T>(
 {
     use itertools::Position::{First, Last, Middle, Only};
 
-    use crate::token::{
-        Archetype::{Character, Range},
-        Evaluation::{Eager, Lazy},
-        TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard},
-        Wildcard::{One, Tree, ZeroOrMore},
-    };
+    use crate::token::Archetype::{Character, Range};
+    use crate::token::Evaluation::{Eager, Lazy};
+    use crate::token::TokenKind::{Alternative, Class, Literal, Repetition, Separator, Wildcard};
+    use crate::token::Wildcard::{One, Tree, ZeroOrMore};
 
     // This assumes that `NUL` is not allowed in paths and matches nothing.
     const NULL_CHARACTER_CLASS: &str = nsepexpr!("[\\x00&&{0}]");
@@ -143,12 +189,13 @@ fn encode<'t, A, T>(
                 // TODO: Should Unicode support also be toggled by casing flags?
                 if literal.is_case_insensitive() {
                     pattern.push_str("(?i)");
-                } else {
+                }
+                else {
                     pattern.push_str("(?-i)");
                 }
                 pattern.push_str(&literal.text().escaped());
             },
-            (_, Separator) => pattern.push_str(sepexpr!("{0}")),
+            (_, Separator(_)) => pattern.push_str(sepexpr!("{0}")),
             (position, Alternative(alternative)) => {
                 let encodings: Vec<_> = alternative
                     .branches()
@@ -179,9 +226,12 @@ fn encode<'t, A, T>(
                         &mut pattern,
                         repetition.tokens().iter(),
                     );
-                    pattern.push_str(&upper.map_or(format!("){{{},}}", lower), |upper| {
+                    pattern.push_str(&if let Some(upper) = upper {
                         format!("){{{},{}}}", lower, upper)
-                    }));
+                    }
+                    else {
+                        format!("){{{},}}", lower)
+                    });
                     pattern
                 };
                 grouping.push_str(pattern, &encoding);
@@ -213,7 +263,8 @@ fn encode<'t, A, T>(
                     // platforms.
                     if Regex::new(&pattern).is_ok() {
                         pattern.into()
-                    } else {
+                    }
+                    else {
                         NULL_CHARACTER_CLASS.into()
                     }
                 });
@@ -221,31 +272,48 @@ fn encode<'t, A, T>(
             (_, Wildcard(One)) => grouping.push_str(pattern, nsepexpr!("{0}")),
             (_, Wildcard(ZeroOrMore(Eager))) => grouping.push_str(pattern, nsepexpr!("{0}*")),
             (_, Wildcard(ZeroOrMore(Lazy))) => grouping.push_str(pattern, nsepexpr!("{0}*?")),
-            (First(_), Wildcard(Tree { is_rooted })) => match superposition {
-                Some(Middle(_) | Last(_)) => {
+            (First(_), Wildcard(Tree { has_root })) => {
+                if let Some(Middle(_) | Last(_)) = superposition {
                     encode_intermediate_tree(grouping, pattern);
-                },
-                _ =>
-                    if *is_rooted {
-                        grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
-                    } else {
-                        pattern.push_str(sepexpr!("(?:{0}?|"));
-                        grouping.push_str(pattern, sepexpr!(".*{0}"));
-                        pattern.push(')');
-                    },
+                }
+                else if *has_root {
+                    grouping.push_str(pattern, sepexpr!("{0}.*{0}?"));
+                }
+                else {
+                    pattern.push_str(sepexpr!("(?:{0}?|"));
+                    grouping.push_str(pattern, sepexpr!(".*{0}"));
+                    pattern.push(')');
+                }
             },
             (Middle(_), Wildcard(Tree { .. })) => {
                 encode_intermediate_tree(grouping, pattern);
             },
-            (Last(_), Wildcard(Tree { .. })) =>
+            (Last(_), Wildcard(Tree { .. })) => {
                 if let Some(First(_) | Middle(_)) = superposition {
                     encode_intermediate_tree(grouping, pattern);
-                } else {
+                }
+                else {
                     pattern.push_str(sepexpr!("(?:{0}?|{0}"));
                     grouping.push_str(pattern, ".*");
                     pattern.push(')');
-                },
+                }
+            },
             (Only(_), Wildcard(Tree { .. })) => grouping.push_str(pattern, ".*"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::encode;
+
+    #[test]
+    fn case_folded_eq() {
+        assert!(encode::case_folded_eq("a", "a"));
+        assert!(encode::case_folded_eq("a", "A"));
+
+        assert!(!encode::case_folded_eq("a", "b"));
+        assert!(!encode::case_folded_eq("aa", "a"));
+        assert!(!encode::case_folded_eq("a", "aa"));
     }
 }

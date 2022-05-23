@@ -1,7 +1,7 @@
 #![cfg(any(feature = "diagnostics-inspect", feature = "diagnostics-report"))]
 
-pub(crate) mod inspect;
-pub(crate) mod report;
+pub mod inspect;
+pub mod report;
 
 /// Length and location of a token within a glob expression.
 ///

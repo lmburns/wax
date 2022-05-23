@@ -3,13 +3,12 @@
 use miette::{Diagnostic, LabeledSpan, SourceSpan};
 use std::borrow::Cow;
 use std::cmp;
-use std::path::PathBuf;
 use thiserror::Error;
-use vec1::Vec1;
+use vec1::{vec1, Vec1};
 
 use crate::token::{self, TokenKind, Tokenized};
 
-pub(crate) type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
+pub type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
 
 /// `Result` that includes diagnostics on both success and failure.
 ///
@@ -19,13 +18,61 @@ pub(crate) type BoxedDiagnostic<'t> = Box<dyn Diagnostic + 't>;
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub type DiagnosticResult<'t, T> = Result<(T, Vec<BoxedDiagnostic<'t>>), Vec1<BoxedDiagnostic<'t>>>;
 
+pub trait IteratorExt<'t>: Iterator + Sized {
+    fn into_non_error_diagnostic(self) -> DiagnosticResult<'t, ()>;
+}
+
+impl<'t, I> IteratorExt<'t> for I
+where
+    I: Iterator<Item = BoxedDiagnostic<'t>>,
+{
+    fn into_non_error_diagnostic(self) -> DiagnosticResult<'t, ()> {
+        Ok(((), self.collect()))
+    }
+}
+
+pub trait ResultExt<'t, T, E> {
+    fn into_error_diagnostic(self) -> DiagnosticResult<'t, T>
+    where
+        E: 't + Diagnostic;
+}
+
+impl<'t, T, E> ResultExt<'t, T, E> for Result<T, E> {
+    fn into_error_diagnostic(self) -> DiagnosticResult<'t, T>
+    where
+        E: 't + Diagnostic,
+    {
+        match self {
+            Ok(value) => Ok((value, vec![])),
+            Err(error) => Err(vec1![Box::new(error) as Box<dyn Diagnostic + 't>]),
+        }
+    }
+}
+
 /// Extension traits for `Result`s with diagnostics.
 #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
 pub trait DiagnosticResultExt<'t, T> {
+    fn ok_value(self) -> Option<T>;
+
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>];
+
+    fn map_value<U, F>(self, f: F) -> DiagnosticResult<'t, U>
+    where
+        F: FnOnce(T) -> U;
+
+    fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<'t, U>
+    where
+        F: FnOnce(T) -> DiagnosticResult<'t, U>;
 }
 
 impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
+    fn ok_value(self) -> Option<T> {
+        match self {
+            Ok((value, _)) => Some(value),
+            _ => None,
+        }
+    }
+
     /// Gets the diagnostics associated with the `Result`.
     fn diagnostics(&self) -> &[BoxedDiagnostic<'t>] {
         match self {
@@ -33,35 +80,40 @@ impl<'t, T> DiagnosticResultExt<'t, T> for DiagnosticResult<'t, T> {
             Err(ref diagnostics) => diagnostics,
         }
     }
+
+    fn map_value<U, F>(self, f: F) -> DiagnosticResult<'t, U>
+    where
+        F: FnOnce(T) -> U,
+    {
+        match self {
+            Ok((value, diagnostics)) => Ok((f(value), diagnostics)),
+            Err(diagnostics) => Err(diagnostics),
+        }
+    }
+
+    fn and_then_diagnose<U, F>(self, f: F) -> DiagnosticResult<'t, U>
+    where
+        F: FnOnce(T) -> DiagnosticResult<'t, U>,
+    {
+        match self {
+            Ok((value, mut diagnostics)) => match f(value) {
+                Ok((value, tail)) => {
+                    diagnostics.extend(tail);
+                    Ok((value, diagnostics))
+                },
+                Err(tail) => {
+                    diagnostics.extend(tail);
+                    Err(diagnostics
+                        .try_into()
+                        .expect("diagnostic failure with no errors"))
+                },
+            },
+            Err(diagnostics) => Err(diagnostics),
+        }
+    }
 }
 
-/// Functions for constructing [`Glob`]s with diagnostics.
-///
-/// This trait provides functions that emit diagnostics and mirror the inherent
-/// functions used to construct [`Glob`]s. Unlike [`Glob`]'s inherent functions,
-/// these functions return diagnostics on both success and failure.
-///
-/// # Examples
-///
-/// ```rust
-/// use wax::{DiagnosticGlob, DiagnosticResultExt as _, Glob};
-///
-/// let result = <Glob as DiagnosticGlob>::new("(?i)readme.{md,mkd,markdown}");
-/// for diagnostic in result.diagnostics() {
-///     eprintln!("{}", diagnostic);
-/// }
-/// if let Ok((glob, _)) = result { /* ... */ }
-/// ```
-///
-/// [`Glob`]: crate::Glob
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-pub trait DiagnosticGlob<'t>: Sized {
-    fn new(expression: &'t str) -> DiagnosticResult<'t, Self>;
-
-    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)>;
-}
-
-pub(crate) trait SourceSpanExt {
+pub trait SourceSpanExt {
     fn union(&self, other: &SourceSpan) -> SourceSpan;
 }
 
@@ -74,20 +126,20 @@ impl SourceSpanExt for SourceSpan {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct CompositeSourceSpan {
+pub struct CompositeSourceSpan {
     label: Option<&'static str>,
     kind: CompositeKind,
 }
 
 impl CompositeSourceSpan {
-    pub(crate) fn span(label: Option<&'static str>, span: SourceSpan) -> Self {
+    pub fn span(label: Option<&'static str>, span: SourceSpan) -> Self {
         CompositeSourceSpan {
             label,
             kind: CompositeKind::Span(span),
         }
     }
 
-    pub(crate) fn correlated(
+    pub fn correlated(
         label: Option<&'static str>,
         span: SourceSpan,
         correlated: CorrelatedSourceSpan,
@@ -98,15 +150,15 @@ impl CompositeSourceSpan {
         }
     }
 
-    pub(crate) fn labels(&self) -> Vec<LabeledSpan> {
-        let label = self.label.map(|label| label.to_string());
+    pub fn labels(&self) -> Vec<LabeledSpan> {
+        let label = self.label.map(str::to_string);
         match self.kind {
-            CompositeKind::Span(ref span) => vec![LabeledSpan::new_with_span(label, span.clone())],
+            CompositeKind::Span(ref span) => vec![LabeledSpan::new_with_span(label, *span)],
             CompositeKind::Correlated {
                 ref span,
                 ref correlated,
             } => {
-                let mut labels = vec![LabeledSpan::new_with_span(label, span.clone())];
+                let mut labels = vec![LabeledSpan::new_with_span(label, *span)];
                 labels.extend(correlated.labels());
                 labels
             },
@@ -124,13 +176,13 @@ enum CompositeKind {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum CorrelatedSourceSpan {
+pub enum CorrelatedSourceSpan {
     Contiguous(SourceSpan),
     Split(SourceSpan, SourceSpan),
 }
 
 impl CorrelatedSourceSpan {
-    pub(crate) fn split_some(left: Option<SourceSpan>, right: SourceSpan) -> Self {
+    pub fn split_some(left: Option<SourceSpan>, right: SourceSpan) -> Self {
         if let Some(left) = left {
             CorrelatedSourceSpan::Split(left, right)
         }
@@ -139,15 +191,15 @@ impl CorrelatedSourceSpan {
         }
     }
 
-    pub(crate) fn labels(&self) -> Vec<LabeledSpan> {
+    pub fn labels(&self) -> Vec<LabeledSpan> {
         let label = Some("here".to_string());
         match self {
             CorrelatedSourceSpan::Contiguous(ref span) => {
-                vec![LabeledSpan::new_with_span(label, span.clone())]
+                vec![LabeledSpan::new_with_span(label, *span)]
             },
             CorrelatedSourceSpan::Split(ref left, ref right) => vec![
-                LabeledSpan::new_with_span(label.clone(), left.clone()),
-                LabeledSpan::new_with_span(label, right.clone()),
+                LabeledSpan::new_with_span(label.clone(), *left),
+                LabeledSpan::new_with_span(label, *right),
             ],
         }
     }
@@ -159,11 +211,10 @@ impl From<SourceSpan> for CorrelatedSourceSpan {
     }
 }
 
-#[allow(single_use_lifetimes)]
 #[derive(Clone, Debug, Diagnostic, Error)]
 #[diagnostic(code(wax::glob::semantic_literal), severity(warning))]
 #[error("`{literal}` has been interpreted as a literal with no semantics")]
-pub(crate) struct SemanticLiteralWarning<'t> {
+pub struct SemanticLiteralWarning<'t> {
     #[source_code]
     expression: Cow<'t, str>,
     literal: Cow<'t, str>,
@@ -171,19 +222,17 @@ pub(crate) struct SemanticLiteralWarning<'t> {
     span: SourceSpan,
 }
 
-#[allow(single_use_lifetimes)]
 #[derive(Clone, Debug, Diagnostic, Error)]
 #[diagnostic(code(wax::glob::terminating_separator), severity(warning))]
 #[error("terminating separator may discard matches")]
-pub(crate) struct TerminatingSeparatorWarning<'t> {
+pub struct TerminatingSeparatorWarning<'t> {
     #[source_code]
     expression: Cow<'t, str>,
     #[label("here")]
     span: SourceSpan,
 }
 
-#[allow(trivial_casts)]
-pub(crate) fn diagnostics<'i, 't>(
+pub fn diagnostics<'i, 't>(
     tokenized: &'i Tokenized<'t>,
 ) -> impl 'i + Iterator<Item = BoxedDiagnostic<'t>> {
     None.into_iter()
@@ -203,8 +252,8 @@ pub(crate) fn diagnostics<'i, 't>(
                     }) as BoxedDiagnostic
                 }),
         )
-        .chain(tokenized.tokens().last().into_iter().flat_map(|token| {
-            matches!(token.kind(), TokenKind::Separator).then(|| {
+        .chain(tokenized.tokens().last().into_iter().filter_map(|token| {
+            matches!(token.kind(), TokenKind::Separator(_)).then(|| {
                 Box::new(TerminatingSeparatorWarning {
                     expression: tokenized.expression().clone(),
                     span: (*token.annotation()).into(),

@@ -1,18 +1,20 @@
 use regex::Captures as BorrowedText;
 use std::str;
 
+use crate::CandidatePath;
+
 #[derive(Clone, Debug)]
 struct OwnedText {
     matched: String,
-    ranges:  Vec<Option<(usize, usize)>>,
+    ranges: Vec<Option<(usize, usize)>>,
 }
 
 impl OwnedText {
-    /// Return the currently owned text
-    pub(crate) fn get(&self, index: usize) -> Option<&str> {
+    pub fn get(&self, index: usize) -> Option<&str> {
         if index == 0 {
             Some(self.matched.as_ref())
-        } else {
+        }
+        else {
             self.ranges
                 .get(index - 1)
                 .and_then(|range| range.map(|range| &self.matched[range.0..range.1]))
@@ -26,7 +28,6 @@ impl<'t> From<BorrowedText<'t>> for OwnedText {
     }
 }
 
-#[allow(clippy::fallible_impl_from)]
 impl<'m, 't> From<&'m BorrowedText<'t>> for OwnedText {
     fn from(captures: &'m BorrowedText<'t>) -> Self {
         let matched = captures.get(0).unwrap().as_str().into();
@@ -35,7 +36,7 @@ impl<'m, 't> From<&'m BorrowedText<'t>> for OwnedText {
             .skip(1)
             .map(|capture| capture.map(|capture| (capture.start(), capture.end())))
             .collect();
-        Self { matched, ranges }
+        OwnedText { matched, ranges }
     }
 }
 
@@ -45,7 +46,7 @@ enum MaybeOwnedText<'t> {
     Owned(OwnedText),
 }
 
-impl MaybeOwnedText<'_> {
+impl<'t> MaybeOwnedText<'t> {
     fn into_owned(self) -> MaybeOwnedText<'static> {
         match self {
             MaybeOwnedText::Borrowed(borrowed) => OwnedText::from(borrowed).into(),
@@ -115,13 +116,13 @@ pub struct MatchedText<'t> {
     inner: MaybeOwnedText<'t>,
 }
 
-impl MatchedText<'_> {
+impl<'t> MatchedText<'t> {
     /// Clones any borrowed data into an owning instance.
-    #[inline]
-    #[must_use]
     pub fn into_owned(self) -> MatchedText<'static> {
         let MatchedText { inner } = self;
-        MatchedText { inner: inner.into_owned() }
+        MatchedText {
+            inner: inner.into_owned(),
+        }
     }
 
     /// Clones any borrowed data to an owning instance.
@@ -134,10 +135,11 @@ impl MatchedText<'_> {
     /// [`Clone`]: std::clone::Clone
     /// [`into_owned`]: crate::MatchedText::into_owned
     // This conversion may appear to operate in place.
-    #[inline]
     #[must_use]
     pub fn to_owned(&self) -> MatchedText<'static> {
-        MatchedText { inner: self.inner.to_owned() }
+        MatchedText {
+            inner: self.inner.to_owned(),
+        }
     }
 
     /// Gets the complete text of a match.
@@ -148,10 +150,8 @@ impl MatchedText<'_> {
     ///
     /// [`get`]: crate::MatchedText::get
     /// [`Pattern`]: crate::Pattern
-    #[inline]
-    #[must_use]
     pub fn complete(&self) -> &str {
-        self.get(0).expect("failed to get index 0")
+        self.get(0).expect("match has no complete text")
     }
 
     /// Gets the matched text of a capture at the given index.
@@ -169,28 +169,33 @@ impl MatchedText<'_> {
     /// `{*.{go,rs}}`.
     ///
     /// [`Pattern`]: crate::Pattern
-    #[inline]
-    #[must_use]
     pub fn get(&self, index: usize) -> Option<&str> {
         match self.inner {
-            MaybeOwnedText::Borrowed(ref captures) =>
-                captures.get(index).map(|capture| capture.as_str()),
+            MaybeOwnedText::Borrowed(ref captures) => {
+                captures.get(index).map(|capture| capture.as_str())
+            },
             MaybeOwnedText::Owned(ref captures) => captures.get(index),
         }
+    }
+
+    pub fn to_candidate_path(&self) -> CandidatePath {
+        CandidatePath::from(self.complete())
     }
 }
 
 // TODO: This probably shouldn't be part of the public API.
 impl<'t> From<BorrowedText<'t>> for MatchedText<'t> {
-    #[inline]
     fn from(captures: BorrowedText<'t>) -> Self {
-        MatchedText { inner: captures.into() }
+        MatchedText {
+            inner: captures.into(),
+        }
     }
 }
 
 impl From<OwnedText> for MatchedText<'static> {
-    #[inline]
     fn from(captures: OwnedText) -> Self {
-        MatchedText { inner: captures.into() }
+        MatchedText {
+            inner: captures.into(),
+        }
     }
 }

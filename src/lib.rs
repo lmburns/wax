@@ -19,53 +19,47 @@ mod diagnostics;
 mod encode;
 mod rule;
 mod token;
+mod walk;
 
 use bstr::ByteVec;
 use itertools::{Itertools as _, Position};
 #[cfg(feature = "diagnostics-report")]
 use miette::Diagnostic;
 use regex::Regex;
-use std::{
-    borrow::{Borrow, Cow},
-    cmp,
-    ffi::OsStr,
-    fmt::{self, Debug, Display, Formatter},
-    fs::{FileType, Metadata},
-    iter::Fuse,
-    path::{Component, Path, PathBuf},
-    str::{self, FromStr},
-};
+use std::borrow::{Borrow, Cow};
+use std::convert::Infallible;
+use std::ffi::OsStr;
+use std::fmt::{self, Debug, Display, Formatter};
+use std::path::{Path, PathBuf};
+use std::str::{self, FromStr};
 use thiserror::Error;
-use walkdir::{self, DirEntry, WalkDir};
-
-/// Describes errors that occur when matching a [`Glob`] against a directory
-/// tree.
-///
-/// [`Glob`]: crate::Glob
-pub use walkdir::Error as WalkError;
 
 #[cfg(feature = "diagnostics-inspect")]
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
-use crate::diagnostics::report::{self, BoxedDiagnostic};
-use crate::token::{Annotation, IntoTokens, Token, Tokenized};
+use crate::diagnostics::report::{self, IteratorExt as _, ResultExt as _};
+use crate::token::{Annotation, IntoTokens, InvariantText, Token, Tokenized};
 
+pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::inspect::CapturingToken;
 #[cfg(feature = "diagnostics-report")]
-pub use crate::diagnostics::report::{DiagnosticGlob, DiagnosticResult, DiagnosticResultExt};
+pub use crate::diagnostics::report::{DiagnosticResult, DiagnosticResultExt};
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::Span;
-pub use crate::{capture::MatchedText, rule::RuleError, token::ParseError};
+pub use crate::encode::CompileError;
+pub use crate::rule::RuleError;
+pub use crate::token::ParseError;
+pub use crate::walk::{
+    FilterTarget, FilterTree, IteratorExt, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
+    WalkError,
+};
 
-/// Determine whether the file-system detects case-sensitivity in file names
 #[cfg(windows)]
 const PATHS_ARE_CASE_INSENSITIVE: bool = true;
-/// Determine whether the file-system detects case-sensitivity in file names
 #[cfg(not(windows))]
 const PATHS_ARE_CASE_INSENSITIVE: bool = false;
 
-/// Extend a `Result` by allowing an `expect_encoding` function
 trait ResultExt<T, E> {
     fn expect_encoding(self) -> T;
 }
@@ -98,87 +92,6 @@ trait StrExt {
 impl StrExt for str {
     fn has_casing(&self) -> bool {
         self.chars().any(CharExt::has_casing)
-    }
-}
-
-trait IteratorExt: Iterator + Sized {
-    fn adjacent(self) -> Adjacent<Self>
-    where
-        Self::Item: Clone;
-}
-
-impl<I> IteratorExt for I
-where
-    I: Iterator,
-{
-    fn adjacent(self) -> Adjacent<Self>
-    where
-        Self::Item: Clone,
-    {
-        Adjacent::new(self)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Adjacency<T> {
-    Only { item: T },
-    First { item: T, right: T },
-    Middle { left: T, item: T, right: T },
-    Last { left: T, item: T },
-}
-
-impl<T> Adjacency<T> {
-    pub(crate) fn into_tuple(self) -> (Option<T>, T, Option<T>) {
-        match self {
-            Adjacency::Only { item } => (None, item, None),
-            Adjacency::First { item, right } => (None, item, Some(right)),
-            Adjacency::Middle { left, item, right } => (Some(left), item, Some(right)),
-            Adjacency::Last { left, item } => (Some(left), item, None),
-        }
-    }
-}
-
-struct Adjacent<I: Iterator> {
-    input:     Fuse<I>,
-    adjacency: Option<Adjacency<I::Item>>,
-}
-
-impl<I: Iterator> Adjacent<I> {
-    fn new(input: I) -> Self {
-        let mut input = input.fuse();
-        let adjacency = match (input.next(), input.next()) {
-            (Some(item), Some(right)) => Some(Adjacency::First { item, right }),
-            (Some(item), None) => Some(Adjacency::Only { item }),
-            (None, None) => None,
-            // The input iterator is fused, so this cannot occur.
-            (None, Some(_)) => unreachable!(),
-        };
-        Self { input, adjacency }
-    }
-}
-
-impl<I> Iterator for Adjacent<I>
-where
-    I: Iterator,
-    I::Item: Clone,
-{
-    type Item = Adjacency<I::Item>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let next = self.input.next();
-        self.adjacency.take().map(|adjacency| {
-            self.adjacency = match adjacency.clone() {
-                Adjacency::First { item: left, right: item }
-                | Adjacency::Middle { item: left, right: item, .. } =>
-                    if let Some(right) = next {
-                        Some(Adjacency::Middle { left, item, right })
-                    } else {
-                        Some(Adjacency::Last { left, item })
-                    },
-                Adjacency::Only { .. } | Adjacency::Last { .. } => None,
-            };
-            adjacency
-        })
     }
 }
 
@@ -237,20 +150,23 @@ impl<T> SliceExt<T> for [T] {
     fn terminals(&self) -> Option<Terminals<&T>> {
         match self.len() {
             0 => None,
-            1 => Some(Terminals::Only(self.get(0)?)),
-            _ => Some(Terminals::StartEnd(self.first()?, self.last()?)),
+            1 => Some(Terminals::Only(self.first().unwrap())),
+            _ => Some(Terminals::StartEnd(
+                self.first().unwrap(),
+                self.last().unwrap(),
+            )),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Terminals<T> {
     Only(T),
     StartEnd(T, T),
 }
 
 impl<T> Terminals<T> {
-    pub(crate) fn map<U, F>(self, mut f: F) -> Terminals<U>
+    pub fn map<U, F>(self, mut f: F) -> Terminals<U>
     where
         F: FnMut(T) -> U,
     {
@@ -265,10 +181,10 @@ impl<T> Terminals<T> {
 ///
 /// Matching is a logical operation and does **not** interact with a file
 /// system. To handle path operations, use [`Path`] and/or [`PathBuf`] and their
-/// associated operations. See [`Glob::partitioned`] for more about globs and
-/// path operations.
+/// associated operations. See [`Glob::partition`] for more about globs and path
+/// operations.
 ///
-/// [`Glob::partitioned`]: crate::Glob::partitioned
+/// [`Glob::partition`]: crate::Glob::partition
 /// [`Path`]: std::path::Path
 /// [`PathBuf`]: std::path::PathBuf
 pub trait Pattern<'t>: IntoTokens<'t> {
@@ -285,6 +201,28 @@ pub trait Pattern<'t>: IntoTokens<'t> {
     ///
     /// [`CandidatePath`]: crate::CandidatePath
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>>;
+
+    /// Gets the variance of the pattern.
+    ///
+    /// An invariant glob expression is essentially constant or literal and has
+    /// no patterns that resolve differently than an equivalent path does using
+    /// the platform's file system APIs. For example, the expression
+    /// `path/to/file.txt` is always invariant and resolves identically to the
+    /// paths `path/to/file.txt` and `path\to\file.txt` on Unix and Windows,
+    /// respectively.
+    ///
+    /// A variant glob expression does not resolve the same way as any path used
+    /// with the platform's file system APIs. This is typically because the
+    /// expression matches multiple texts using a regular pattern, such as in
+    /// the expression `**/*.rs`.
+    ///
+    /// Note that this considers potentially invariant patterns such as
+    /// `path/[t][o]/{file.txt}`, which is invariant on Unix. Variance also
+    /// considers flags and the case sensitivity of literals. For example,
+    /// `(?i)file.text` is invariant on Windows but is not on Unix. Variance is
+    /// therefore platform dependent, as it is based on the behavior of file
+    /// system APIs.
+    fn variance(&self) -> Variance;
 }
 
 // TODO: It is not possible to use the `#[doc(cfg())]` attribute on the
@@ -309,6 +247,16 @@ pub trait Pattern<'t>: IntoTokens<'t> {
 #[non_exhaustive]
 #[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
 pub enum GlobError<'t> {
+    /// A glob expression failed to compile.
+    ///
+    /// This error occurs when a glob expression (or some part of a glob
+    /// expression) cannot be compiled. See the documentation for
+    /// [`CompileError`].
+    ///
+    /// [`CompileError`]: crate::CompileError
+    #[error(transparent)]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    Compile(CompileError),
     /// A glob expression failed to parse.
     ///
     /// This error occurs when attempting to construct a [`Glob`] from a glob
@@ -342,12 +290,11 @@ pub enum GlobError<'t> {
     Walk(WalkError),
 }
 
-impl GlobError<'_> {
+impl<'t> GlobError<'t> {
     /// Clones any borrowed data into an owning instance.
-    #[inline]
-    #[must_use]
     pub fn into_owned(self) -> GlobError<'static> {
         match self {
+            GlobError::Compile(error) => GlobError::Compile(error),
             GlobError::Parse(error) => GlobError::Parse(error.into_owned()),
             GlobError::Rule(error) => GlobError::Rule(error.into_owned()),
             GlobError::Walk(error) => GlobError::Walk(error),
@@ -355,22 +302,31 @@ impl GlobError<'_> {
     }
 }
 
+impl From<CompileError> for GlobError<'_> {
+    fn from(error: CompileError) -> Self {
+        GlobError::Compile(error)
+    }
+}
+
+impl From<Infallible> for GlobError<'_> {
+    fn from(_: Infallible) -> Self {
+        unreachable!()
+    }
+}
+
 impl<'t> From<ParseError<'t>> for GlobError<'t> {
-    #[inline]
     fn from(error: ParseError) -> Self {
         GlobError::Parse(error.into_owned())
     }
 }
 
 impl<'t> From<RuleError<'t>> for GlobError<'t> {
-    #[inline]
     fn from(error: RuleError<'t>) -> Self {
         GlobError::Rule(error)
     }
 }
 
-impl From<WalkError> for GlobError<'static> {
-    #[inline]
+impl From<WalkError> for GlobError<'_> {
     fn from(error: WalkError) -> Self {
         GlobError::Walk(error)
     }
@@ -390,38 +346,34 @@ pub struct CandidatePath<'b> {
     text: Cow<'b, str>,
 }
 
-impl CandidatePath<'_> {
+impl<'b> CandidatePath<'b> {
     /// Clones any borrowed data into an owning instance.
-    #[inline]
-    #[must_use]
     pub fn into_owned(self) -> CandidatePath<'static> {
-        CandidatePath { text: self.text.into_owned().into() }
+        CandidatePath {
+            text: self.text.into_owned().into(),
+        }
     }
 }
 
 impl AsRef<str> for CandidatePath<'_> {
-    #[inline]
     fn as_ref(&self) -> &str {
         self.text.as_ref()
     }
 }
 
 impl Debug for CandidatePath<'_> {
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.text)
     }
 }
 
 impl Display for CandidatePath<'_> {
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.text)
     }
 }
 
 impl<'b> From<&'b OsStr> for CandidatePath<'b> {
-    #[inline]
     fn from(text: &'b OsStr) -> Self {
         CandidatePath {
             text: match Vec::from_os_str_lossy(text) {
@@ -433,16 +385,82 @@ impl<'b> From<&'b OsStr> for CandidatePath<'b> {
 }
 
 impl<'b> From<&'b Path> for CandidatePath<'b> {
-    #[inline]
     fn from(path: &'b Path) -> Self {
         CandidatePath::from(path.as_os_str())
     }
 }
 
 impl<'b> From<&'b str> for CandidatePath<'b> {
-    #[inline]
     fn from(text: &'b str) -> Self {
         CandidatePath { text: text.into() }
+    }
+}
+
+/// Variance of a [`Pattern`].
+///
+/// The variance of a pattern describes the kinds of paths it can match with
+/// respect to the platform file system APIs. [`Pattern`]s are either variant or
+/// invariant.
+///
+/// [`Pattern`]: crate::Pattern
+/// [`Variance`]: crate::Variance
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum Variance {
+    /// A [`Pattern`] is invariant and equivalent to a native path.
+    ///
+    /// An invariant [`Pattern`] is equivalent to a native path and resolves the
+    /// same way as such a native path does when used with the platform's file
+    /// system APIs. These APIs may differ, so variance is platform dependent.
+    ///
+    /// Invariant expressions are not limited to literals and separators. Some
+    /// non-literal expressions may be invariant, such as in the expression
+    /// `path/[t][o]/{file,file}.txt`, which is invariant on Unix (but not on
+    /// Windows, because the character class expressions do not consider
+    /// casing).
+    ///
+    /// [`Pattern`]: crate::Pattern
+    Invariant(
+        /// An equivalent native path that describes the invariant [`Pattern`].
+        /// For example, the invariant expression `path/to/file.txt` can be
+        /// described by the paths `path/to/file.txt` and `path\to\file.txt` on
+        /// Unix and Windows, respectively.
+        PathBuf,
+    ),
+    /// A [`Pattern`] is variant and resolves differently than any native path.
+    ///
+    /// A variant [`Pattern`] has no equivalent native path. Most globs are
+    /// variant and match a variety of paths, as invariant [`Pattern`]s have no
+    /// more utility than a native path.
+    ///
+    /// Variant expressions may be formed from only literals or other
+    /// expressions that seem to be strictly variant at first blush. For
+    /// example, the variance of literals considers the case sensitivity of the
+    /// platform's file system APIs, so the expression `(?i)path/to/file.txt` is
+    /// variant on Unix (but not on Windows). Similarly, the expression
+    /// `path/[t][o]/file.txt` is variant on Windows (but not on Unix).
+    ///
+    /// [`Pattern`]: crate::Pattern
+    Variant,
+}
+
+impl Variance {
+    pub fn is_invariant(&self) -> bool {
+        matches!(self, Variance::Invariant(_))
+    }
+
+    pub fn is_variant(&self) -> bool {
+        matches!(self, Variance::Variant)
+    }
+}
+
+impl From<token::Variance<InvariantText<'_>>> for Variance {
+    fn from(variance: token::Variance<InvariantText<'_>>) -> Self {
+        match variance {
+            token::Variance::Invariant(text) => {
+                Variance::Invariant(PathBuf::from(text.to_string().into_owned()))
+            },
+            token::Variance::Variant(_) => Variance::Variant,
+        }
     }
 }
 
@@ -483,7 +501,7 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// use wax::Glob;
 ///
 /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
-/// for entry in glob.walk("./Pictures", usize::MAX) {
+/// for entry in glob.walk("./Pictures") {
 ///     let entry = entry.unwrap();
 ///     println!("JPEG: {:?}", entry.path());
 /// }
@@ -493,20 +511,20 @@ impl<'b> From<&'b str> for CandidatePath<'b> {
 /// [`walk`]: crate::Glob::walk
 #[derive(Clone, Debug)]
 pub struct Glob<'t> {
-    tokenized: Tokenized<'t>,
-    regex:     Regex,
+    pub(crate) tokenized: Tokenized<'t>,
+    pub(crate) regex: Regex,
 }
 
 impl<'t> Glob<'t> {
-    fn compile<T>(tokens: impl IntoIterator<Item = T>) -> Regex
+    fn compile<T>(tokens: impl IntoIterator<Item = T>) -> Result<Regex, CompileError>
     where
         T: Borrow<Token<'t>>,
     {
         encode::compile(tokens)
     }
 
-    // TODO: Document pattern syntax in crate documentation & refer to it here
-
+    // TODO: Document pattern syntax in the crate documentation and refer to it
+    //       here.
     /// Constructs a [`Glob`] from a glob expression.
     ///
     /// A glob expression is UTF-8 encoded text that resembles a Unix path
@@ -517,48 +535,80 @@ impl<'t> Glob<'t> {
     ///
     /// Returns an error if the glob expression could not be parsed or is
     /// malformed. See the documentation for [`ParseError`] and [`RuleError`].
+    ///
+    /// [`Glob`]: crate::Glob
+    /// [`ParseError`]: crate::ParseError
+    /// [`RuleError`]: crate::RuleError
     pub fn new(expression: &'t str) -> Result<Self, GlobError<'t>> {
         let tokenized = parse_and_check(expression)?;
-        let regex = Self::compile(tokenized.tokens());
-        Ok(Self { tokenized, regex })
+        let regex = Glob::compile(tokenized.tokens())?;
+        Ok(Glob { tokenized, regex })
     }
 
     /// Return the inner `Regex`
-    pub fn regex(&self) -> &Regex {
+    #[must_use]
+    pub const fn regex(&self) -> &Regex {
         &self.regex
     }
 
-    /// Partitions a glob expression into an invariant [`PathBuf`] prefix and
-    /// variant [`Glob`] postfix.
+    /// Constructs a [`Glob`] from a glob expression with diagnostics.
+    ///
+    /// This function is the same as [`Glob::new`], but additionally returns
+    /// detailed diagnostics on both success and failure.
+    ///
+    /// See [`Glob::diagnostics`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use wax::{DiagnosticResultExt as _, Glob};
+    ///
+    /// let result = Glob::diagnosed("(?i)readme.{md,mkd,markdown}");
+    /// for diagnostic in result.diagnostics() {
+    ///     eprintln!("{}", diagnostic);
+    /// }
+    /// if let Some(glob) = result.ok_value() { /* ... */ }
+    /// ```
+    ///
+    /// [`Glob`]: crate::Glob
+    /// [`Glob::diagnostics`]: crate::Glob::diagnostics
+    /// [`Glob::new`]: crate::Glob::new
+    #[cfg(feature = "diagnostics-report")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
+    pub fn diagnosed(expression: &'t str) -> DiagnosticResult<'t, Self> {
+        parse_and_diagnose(expression).and_then_diagnose(|tokenized| {
+            Glob::compile(tokenized.tokens())
+                .into_error_diagnostic()
+                .map_value(|regex| Glob { tokenized, regex })
+        })
+    }
+
+    /// Partitions a [`Glob`] into an invariant [`PathBuf`] prefix and variant
+    /// [`Glob`] postfix.
     ///
     /// The invariant prefix contains no glob patterns nor other variant
     /// components and therefore can be interpreted as a native path. The
-    /// [`Glob`] postfix is variant and contains the remaining components (in
-    /// particular, patterns) that follow the prefix. For example, the glob
-    /// expression `.local/**/*.log` would produce the path `.local` and glob
-    /// `**/*.log`. It is possible for either partition to be empty.
+    /// [`Glob`] postfix is variant and contains the remaining components that
+    /// follow the prefix. For example, the glob expression `.local/**/*.log`
+    /// would produce the path `.local` and glob `**/*.log`. It is possible for
+    /// either partition to be empty.
     ///
     /// Literal components may be considered variant if they contain characters
+    ///
     /// with casing and the configured case sensitivity differs from the target
     /// platform's file system. For example, the case-insensitive literal
     /// expression `(?i)photos` is considered variant on Unix and invariant on
     /// Windows, because the literal `photos` resolves differently in Unix file
-    /// system APIs than [`Glob`] APIs (which respect the configured
-    /// case-insensitivity).
+    /// system APIs.
     ///
-    /// Partitioning a glob expression allows any invariant prefix to be used as
-    /// a native path to establish a working directory or to interpret semantic
+    /// Partitioning a [`Glob`] allows any invariant prefix to be used as a
+    /// native path to establish a working directory or to interpret semantic
     /// components that are not recognized by globs, such as parent directory
     /// `..` components.
     ///
     /// Partitioned [`Glob`]s are never rooted. If the glob expression has a
     /// root component, then it is always included in the invariant [`PathBuf`]
     /// prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the glob expression could not be parsed or is
-    /// malformed. See the documentation for [`ParseError`] and [`RuleError`].
     ///
     /// # Examples
     ///
@@ -573,8 +623,8 @@ impl<'t> Glob<'t> {
     /// use wax::Glob;
     ///
     /// let directory = Path::new("."); // Working directory.
-    /// let (prefix, glob) = Glob::partitioned("../site/img/*.{jpg,png}").unwrap();
-    /// for entry in glob.walk(directory.join(prefix), usize::MAX) {
+    /// let (prefix, glob) = Glob::new("../site/img/*.{jpg,png}").unwrap().partition();
+    /// for entry in glob.walk(directory.join(prefix)) {
     ///     // ...
     /// }
     /// ```
@@ -594,7 +644,7 @@ impl<'t> Glob<'t> {
     /// # Path::new("");
     ///
     /// let directory = Path::new("."); // Working directory.
-    /// let (prefix, glob) = Glob::partitioned("../../src/**").unwrap();
+    /// let (prefix, glob) = Glob::new("../../src/**").unwrap().partition();
     /// let prefix = dunce::canonicalize(directory.join(&prefix)).unwrap();
     /// if dunce::canonicalize(path)
     ///     .unwrap()
@@ -609,25 +659,27 @@ impl<'t> Glob<'t> {
     /// The above examples illustrate particular approaches, but the invariant
     /// prefix can be used to interact with native paths as needed for a given
     /// application.
-    pub fn partitioned(expression: &'t str) -> Result<(PathBuf, Self), GlobError<'t>> {
-        let tokenized = parse_and_check(expression)?;
+    ///
+    /// [`Glob`]: crate::Glob
+    /// [`ParseError`]: crate::ParseError
+    /// [`PathBuf`]: std::path::PathBuf
+    /// [`RuleError`]: crate::RuleError
+    /// [`walk`]: crate::Glob::walk
+    pub fn partition(self) -> (PathBuf, Self) {
+        let Glob { tokenized, .. } = self;
         let (prefix, tokenized) = tokenized.partition();
-        let regex = Glob::compile(tokenized.tokens());
-        Ok((prefix, Glob { tokenized, regex }))
+        let regex = Glob::compile(tokenized.tokens()).expect("failed to compile partitioned glob");
+        (prefix, Glob { tokenized, regex })
     }
 
     /// Clones any borrowed data into an owning instance.
-    #[inline]
-    #[must_use]
     pub fn into_owned(self) -> Glob<'static> {
         let Glob { tokenized, regex } = self;
-        Glob { tokenized: tokenized.into_owned(), regex }
+        Glob {
+            tokenized: tokenized.into_owned(),
+            regex,
+        }
     }
-
-    // TODO: Provide more configuration of the traversal. Consider using
-    //       `impl Into<Configuration>` with permissive conversions to allow
-    //       individual parameters to be configured, such as depth via a
-    //       conversion from `usize`.
 
     /// Gets an iterator over matching files in a directory tree.
     ///
@@ -643,8 +695,11 @@ impl<'t> Glob<'t> {
     /// `/mnt/media/**/*.mp4`. The [`has_root`] function can be used to check if
     /// a [`Glob`] is rooted.
     ///
-    /// Unlike functions in [`Pattern`], this operation interacts with the file
-    /// system.
+    /// This function uses the default [`WalkBehavior`]. To configure the
+    /// behavior of the traversal, see [`Glob::walk_with_behavior`].
+    ///
+    /// Unlike functions in [`Pattern`], **this operation is semantic and
+    /// interacts with the file system**.
     ///
     /// # Examples
     ///
@@ -652,64 +707,101 @@ impl<'t> Glob<'t> {
     /// use wax::Glob;
     ///
     /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
-    /// for entry in glob.walk("./Pictures", usize::MAX) {
+    /// for entry in glob.walk("./Pictures") {
     ///     let entry = entry.unwrap();
     ///     println!("JPEG: {:?}", entry.path());
     /// }
     /// ```
-    #[inline]
-    pub fn walk(&self, directory: impl AsRef<Path>, depth: usize) -> Walk {
-        let directory = directory.as_ref();
-        // The directory tree is traversed from `root`, which may include an
-        // invariant prefix from the glob pattern. `Walk` patterns are only
-        // applied to path components following the `prefix` (distinct from the
-        // glob pattern prefix) in `root`.
-        let (root, prefix, depth) = token::invariant_prefix_path(self.tokenized.tokens())
-            .map_or_else(
-                || {
-                    let root = Cow::from(directory);
-                    (root.clone(), root, depth)
-                },
-                |prefix| {
-                    let root = directory.join(&prefix).into();
-                    if prefix.is_absolute() {
-                        // Absolute paths replace paths with which they are joined,
-                        // in which case there is no prefix.
-                        (root, PathBuf::new().into(), depth)
-                    } else {
-                        // TODO: If the depth is exhausted by an invariant prefix
-                        //       path, then `Walk` should yield no entries. This
-                        //       computes a depth of zero when this occurs, so
-                        //       entries may still be yielded.
-                        // `depth` is relative to the input `directory`, so count
-                        // any components added by an invariant prefix path from the
-                        // glob.
-                        let depth = depth.saturating_sub(prefix.components().count());
-                        (root, directory.into(), depth)
-                    }
-                },
-            );
-        let regexes = Walk::compile(self.tokenized.tokens());
+    ///
+    /// Because [`Glob`]s do not support general negations, the [`not`] iterator
+    /// adaptor can be used when walking a directory tree to filter
+    /// [`WalkEntry`]s using arbitary patterns. **This should be preferred over
+    /// external iterator filtering, because it does not traverse directory
+    /// trees that match terminal negations.**
+    ///
+    /// ```rust,no_run
+    /// use wax::Glob;
+    ///
+    /// let glob = Glob::new("**/*.(?i){jpg,jpeg,png}").unwrap();
+    /// for entry in glob
+    ///     .walk("./Pictures")
+    ///     .not(["**/(i?){background<s:0,1>,wallpaper<s:0,1>}/**"])
+    ///     .unwrap()
+    /// {
+    ///     let entry = entry.unwrap();
+    ///     println!("{:?}", entry.path());
+    /// }
+    /// ```
+    ///
+    /// [`Glob`]: crate::Glob
+    /// [`Glob::walk_with_behavior`]: crate::Glob::walk_with_behavior
+    /// [`has_root`]: crate::Glob::has_root
+    /// [`not`]: crate::Walk::not
+    /// [`Path::join`]: std::path::Path::join
+    /// [`PathBuf::push`]: std::path::PathBuf::push
+    /// [`Pattern`]: crate::Pattern
+    /// [`WalkBehavior`]: crate::WalkBehavior
+    /// [`WalkEntry`]: crate::WalkEntry
+    pub fn walk(&self, directory: impl AsRef<Path>) -> Walk {
+        self.walk_with_behavior(directory, WalkBehavior::default())
+    }
 
-        Walk {
-            regex: Cow::Borrowed(&self.regex),
-            regexes,
-            prefix: prefix.into_owned(),
-            walk: WalkDir::new(root)
-                .follow_links(false)
-                .max_depth(depth)
-                .into_iter(),
-        }
+    /// Gets an iterator over matching files in a directory tree.
+    ///
+    /// This function is the same as [`Glob::walk`], but it additionally accepts
+    /// a [`WalkBehavior`]. This can be used to configure how the traversal
+    /// interacts with symbolic links, the maximum depth from the root, etc.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use wax::{Glob, WalkBehavior};
+    ///
+    /// let glob = Glob::new("**/*.(?i){jpg,jpeg}").unwrap();
+    /// for entry in glob.walk_with_behavior("./Pictures", WalkBehavior::default()) {
+    ///     let entry = entry.unwrap();
+    ///     println!("JPEG: {:?}", entry.path());
+    /// }
+    /// ```
+    ///
+    /// By default, symbolic links are read as normal files and their targets
+    /// are ignored. To follow symbolic links and traverse any directories that
+    /// they reference, specify a [`LinkBehavior`].
+    ///
+    /// ```rust,no_run
+    /// use wax::{Glob, LinkBehavior};
+    ///
+    /// let glob = Glob::new("**/*.txt").unwrap();
+    /// for entry in glob.walk_with_behavior("/var/log", LinkBehavior::ReadTarget) {
+    ///     let entry = entry.unwrap();
+    ///     println!("Log: {:?}", entry.path());
+    /// }
+    /// ```
+    ///
+    /// [`Glob::walk`]: crate::Glob::walk
+    /// [`LinkBehavior`]: crate::LinkBehavior
+    /// [`WalkBehavior`]: crate::WalkBehavior
+    pub fn walk_with_behavior(
+        &self,
+        directory: impl AsRef<Path>,
+        behavior: impl Into<WalkBehavior>,
+    ) -> Walk {
+        walk::walk(self, directory, behavior)
     }
 
     /// Gets non-error [`Diagnostic`]s.
     ///
     /// This function requires a receiving [`Glob`] and so does not report
-    /// error-level [`Diagnostic`]s. See the [`DiagnosticGlob`] trait for
-    /// constructing a [`Glob`] with complete diagnostic information.
+    /// error-level [`Diagnostic`]s. It can be used to get non-error diagnostics
+    /// after constructing or [partitioning] a [`Glob`].
+    ///
+    /// See [`Glob::diagnosed`].
     ///
     /// [`Diagnostic`]: miette::Diagnostic
     /// [`Glob`]: crate::Glob
+    /// [`Glob::diagnosed`]: crate::Glob::diagnosed
+    ///
+    /// [partitioning]: crate::Glob::partition
     #[cfg(feature = "diagnostics-report")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
     pub fn diagnostics(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
@@ -728,44 +820,16 @@ impl<'t> Glob<'t> {
         inspect::captures(self.tokenized.tokens())
     }
 
-    /// Returns `true` if the glob is invariant.
-    ///
-    /// An invariant glob expression is essentially constant or literal and has
-    /// no patterns that resolve differently than an equivalent path does using
-    /// the platform's file system APIs.
-    ///
-    /// Note that this considers potentially invariant patterns such as
-    /// `path/[t][o]/{file.txt}`, which is invariant on Unix. Variance also
-    /// considers flags and the case sensitivity of literals. For example,
-    /// `(?i)file.text` is invariant on Windows but is not on Unix. Variance is
-    /// therefore platform dependent, as it is based on the behavior of file
-    /// system APIs.
-    ///
-    ///  - Wildcards: `*` | `?`
-    ///  - Character classes: `[...]`
-    ///  - Alternatives: `{...,...}`
-    ///  - Repetitions: `<...:...>`
-    #[inline]
-    #[must_use]
-    pub fn is_invariant(&self) -> bool {
-        // TODO: This may be expensive.
-        self.tokenized
-            .tokens()
-            .iter()
-            .all(|token| token.to_invariant_string().is_some())
-    }
-
     /// Returns `true` if the glob is rooted.
     ///
     /// As with Unix paths, a glob expression is rooted if it begins with a
     /// separator `/`. Patterns may also root an expression, such as
     /// `</root:1,>`.
-    /// If the pattern is blank, the `Glob is also considered to be 'rooted'.
     pub fn has_root(&self) -> bool {
         self.tokenized
             .tokens()
             .first()
-            .map_or(false, Token::is_rooted)
+            .map_or(false, Token::has_root)
     }
 
     /// Returns `true` if the glob has literals that have non-nominal semantics
@@ -778,40 +842,17 @@ impl<'t> Glob<'t> {
     /// exact nominal components and never paths that consider relative
     /// relationships.
     ///
-    /// See [`Glob::partitioned`].
-    #[inline]
-    #[must_use]
+    /// See [`Glob::partition`].
+    ///
+    /// [`Glob::partition`]: crate::Glob::partition
     pub fn has_semantic_literals(&self) -> bool {
         token::literals(self.tokenized.tokens()).any(|(_, literal)| literal.is_semantic_literal())
-    }
-}
-
-#[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
-#[cfg(feature = "diagnostics-report")]
-impl<'t> DiagnosticGlob<'t> for Glob<'t> {
-    /// Constructs a [`Glob`] from a glob expression with diagnostics.
-    fn new(expression: &'t str) -> DiagnosticResult<'t, Self> {
-        parse_and_diagnose(expression).map(|(tokenized, diagnostics)| {
-            let regex = Glob::compile(tokenized.tokens());
-            (Glob { tokenized, regex }, diagnostics)
-        })
-    }
-
-    /// Partitions a glob expression into an invariant `PathBuf` prefix and
-    /// variant `Glob` postfix with diagnostics.
-    fn partitioned(expression: &'t str) -> DiagnosticResult<'t, (PathBuf, Self)> {
-        parse_and_diagnose(expression).map(|(tokenized, diagnostics)| {
-            let (prefix, tokenized) = tokenized.partition();
-            let regex = Glob::compile(tokenized.tokens());
-            ((prefix, Glob { tokenized, regex }), diagnostics)
-        })
     }
 }
 
 impl FromStr for Glob<'static> {
     type Err = GlobError<'static>;
 
-    #[inline]
     fn from_str(expression: &str) -> Result<Self, Self::Err> {
         Glob::new(expression)
             .map(Glob::into_owned)
@@ -829,15 +870,17 @@ impl<'t> IntoTokens<'t> for Glob<'t> {
 }
 
 impl<'t> Pattern<'t> for Glob<'t> {
-    #[inline]
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
         self.regex.is_match(path.as_ref())
     }
 
-    #[inline]
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
+    }
+
+    fn variance(&self) -> Variance {
+        self.tokenized.variance().into()
     }
 }
 
@@ -858,12 +901,12 @@ impl<'t> TryFrom<&'t str> for Glob<'t> {
 /// [`Pattern`]: crate::Pattern
 #[derive(Clone, Debug)]
 pub struct Any<'t> {
-    token: Token<'t, ()>,
-    regex: Regex,
+    pub(crate) token: Token<'t, ()>,
+    pub(crate) regex: Regex,
 }
 
 impl<'t> Any<'t> {
-    fn compile(token: &Token<'t, ()>) -> Regex {
+    fn compile(token: &Token<'t, ()>) -> Result<Regex, CompileError> {
         encode::compile([token])
     }
 }
@@ -878,256 +921,17 @@ impl<'t> IntoTokens<'t> for Any<'t> {
 }
 
 impl<'t> Pattern<'t> for Any<'t> {
-    #[inline]
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool {
         let path = path.into();
         self.regex.is_match(path.as_ref())
     }
 
-    #[inline]
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
-}
 
-/// Traverses a directory tree via a `Walk` instance.
-///
-/// This macro emits an interruptable loop that executes a block of code
-/// whenever a `WalkEntry` or error is encountered while traversing a directory
-/// tree. The block may return from its function or otherwise interrupt and
-/// subsequently resume the loop.
-///
-/// Note that if the block attempts to emit a `WalkEntry` across a function
-/// boundary that the entry must copy its contents via `into_owned`.
-macro_rules! walk {
-    ($state:expr => |$entry:ident| $f:block) => {
-        use itertools::EitherOrBoth::{Both, Left, Right};
-        use itertools::Position::{First, Last, Middle, Only};
-
-        // `while-let` avoids a mutable borrow of `walk`, which would prevent a
-        // subsequent call to `skip_current_dir` within the loop body.
-        #[allow(clippy::while_let_on_iterator)]
-        #[allow(unreachable_code)]
-        'walk: while let Some(entry) = $state.walk.next() {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    let $entry = Err(error.into());
-                    $f
-                    continue; // May be unreachable.
-                }
-            };
-            let depth = cmp::max(entry.depth(), 1) - 1;
-            let path = entry
-                .path()
-                .strip_prefix(&$state.prefix)
-                .expect("path is not in tree");
-            for candidate in path
-                .components()
-                .skip(depth)
-                .filter_map(|component| match component {
-                    Component::Normal(component) => Some(CandidatePath::from(component)),
-                    _ => None,
-                })
-                .zip_longest($state.regexes.iter().skip(depth))
-                .with_position()
-            {
-                match candidate.as_tuple() {
-                    (First(_) | Middle(_), Both(component, regex)) => {
-                        if !regex.is_match(component.as_ref()) {
-                            // Do not descend into directories that do not match
-                            // the corresponding component regex.
-                            if entry.file_type().is_dir() {
-                                $state.walk.skip_current_dir();
-                            }
-                            continue 'walk;
-                        }
-                    }
-                    (Last(_) | Only(_), Both(component, regex)) => {
-                        if regex.is_match(component.as_ref()) {
-                            let path = CandidatePath::from(path);
-                            if let Some(matched) =
-                                $state.regex.captures(path.as_ref()).map(MatchedText::from)
-                            {
-                                let $entry = Ok(WalkEntry {
-                                    entry: Cow::Borrowed(&entry),
-                                    matched,
-                                });
-                                $f
-                            }
-                        }
-                        else {
-                            // Do not descend into directories that do not match
-                            // the corresponding component regex.
-                            if entry.file_type().is_dir() {
-                                $state.walk.skip_current_dir();
-                            }
-                        }
-                    }
-                    (_, Left(_component)) => {
-                        let path = CandidatePath::from(path);
-                        if let Some(matched) =
-                            $state.regex.captures(path.as_ref()).map(MatchedText::from)
-                        {
-                            let $entry = Ok(WalkEntry {
-                                entry: Cow::Borrowed(&entry),
-                                matched,
-                            });
-                            $f
-                            continue 'walk; // May be unreachable.
-                        }
-                    }
-                    (_, Right(_regex)) => {
-                        continue 'walk;
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Describes a file matching a [`Glob`] in a directory tree.
-#[derive(Debug)]
-pub struct WalkEntry<'e> {
-    entry:   Cow<'e, DirEntry>,
-    matched: MatchedText<'e>,
-}
-
-impl<'e> WalkEntry<'e> {
-    /// Clones any borrowed data into an owning instance.
-    #[inline]
-    #[must_use]
-    pub fn into_owned(self) -> WalkEntry<'static> {
-        let WalkEntry { entry, matched } = self;
-        WalkEntry {
-            entry:   Cow::Owned(entry.into_owned()),
-            matched: matched.into_owned(),
-        }
-    }
-
-    /// Convert the entry into a [`PathBuf`]
-    #[inline]
-    #[must_use]
-    pub fn into_path(self) -> PathBuf {
-        match self.entry {
-            Cow::Borrowed(entry) => entry.path().to_path_buf(),
-            Cow::Owned(entry) => entry.into_path(),
-        }
-    }
-
-    /// Gets the [`Path`] of the matched file.
-    #[inline]
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        self.entry.path()
-    }
-
-    /// Converts the entry to the matched [`CandidatePath`].
-    ///
-    /// This differs from [`path`](WalkEntry::path) and [`into_path`](WalkEntry::into_path)., and uses the same encoding and
-    /// representation exposed by the matched text in [`matched`].
-    #[inline]
-    #[must_use]
-    pub fn to_candidate_path(&self) -> CandidatePath<'_> {
-        self.path().into()
-    }
-
-    /// Return the entry's [`FileType`]
-    #[inline]
-    #[must_use]
-    pub fn file_type(&self) -> FileType {
-        self.entry.file_type()
-    }
-
-    /// Return the `Metadata` of the entry
-    ///
-    /// # Errors
-    /// May produce an error if the metadata is unable to be acquired
-    #[inline]
-    pub fn metadata(&self) -> Result<Metadata, GlobError<'static>> {
-        self.entry.metadata().map_err(From::from)
-    }
-
-    /// Gets the depth of the file from the root of the directory tree.
-    #[inline]
-    #[must_use]
-    pub fn depth(&self) -> usize {
-        self.entry.depth()
-    }
-
-    /// Gets the matched text in the path of the file.
-    #[inline]
-    #[must_use]
-    pub const fn matched(&self) -> &MatchedText<'e> {
-        &self.matched
-    }
-}
-
-/// Iterator over files matching a [`Glob`] in a directory tree.
-///
-/// [`Glob`]: crate::Glob
-#[derive(Debug)]
-#[must_use = "Walk is principally an iterator and is therefore lazy"]
-pub struct Walk<'g> {
-    regex:   Cow<'g, Regex>,
-    regexes: Vec<Regex>,
-    prefix:  PathBuf,
-    walk:    walkdir::IntoIter,
-}
-
-impl Walk<'_> {
-    fn compile<'t, I>(tokens: I) -> Vec<Regex>
-    where
-        I: IntoIterator<Item = &'t Token<'t>>,
-        I::IntoIter: Clone,
-    {
-        let mut regexes = Vec::new();
-        for component in token::components(tokens) {
-            if component
-                .tokens()
-                .iter()
-                .any(|token| token.has_component_boundary())
-            {
-                // Stop at component boundaries, such as tree wildcards or any
-                // boundary within an alternative token.
-                break;
-            }
-
-            regexes.push(Glob::compile(component.tokens().iter().copied()));
-        }
-        regexes
-    }
-
-    /// Clones any borrowed data into an owning instance.
-    #[inline]
-    #[must_use]
-    pub fn into_owned(self) -> Walk<'static> {
-        let Walk { regex, regexes, prefix, walk } = self;
-        Walk { regex: Cow::Owned(regex.into_owned()), regexes, prefix, walk }
-    }
-
-    /// Calls a closure on each matched file or error.
-    ///
-    /// This function does not clone the contents of paths and captures when
-    /// emitting entries and so may be more efficient than external iteration
-    /// via [`Iterator`] (and [`Iterator::for_each`]), which must clone text.
-    #[inline]
-    pub fn for_each(mut self, mut f: impl FnMut(Result<WalkEntry, WalkError>)) {
-        walk!(self => |entry| {
-            f(entry);
-        });
-    }
-}
-
-impl Iterator for Walk<'_> {
-    type Item = Result<WalkEntry<'static>, GlobError<'static>>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        walk!(self => |entry| {
-            return Some(entry.map(|entry: WalkEntry| entry.into_owned()));
-        });
-        None
+    fn variance(&self) -> Variance {
+        self.token.variance::<InvariantText>().into()
     }
 }
 
@@ -1136,7 +940,6 @@ impl Iterator for Walk<'_> {
 //       types to be combined in an `any` call and would be especially useful if
 //       additional combinators are introduced (namely a `Not` combinator, as
 //       `All` is a bit odd and not very useful in this context.
-
 /// Combinator that emits a [`Pattern`] that matches if any of its input
 /// [`Pattern`]s match.
 ///
@@ -1191,10 +994,16 @@ impl Iterator for Walk<'_> {
 /// # Errors
 ///
 /// Returns an error if any of the inputs could not be converted into the target
-/// [`Pattern`] type `P`.
-#[inline]
-pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, <I::Item as TryInto<P>>::Error>
+/// [`Pattern`] type `P`. If the inputs are of type `P`, then this function is
+/// infallible.
+///
+/// [`Any`]: crate::Any
+/// [`Glob`]: crate::Glob
+/// [`IntoIterator`]: std::iter::IntoIterator
+/// [`Pattern`]: crate::Pattern
+pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, GlobError<'t>>
 where
+    GlobError<'t>: From<<I::Item as TryInto<P>>::Error>,
     P: Pattern<'t>,
     I: IntoIterator,
     I::Item: TryInto<P>,
@@ -1206,19 +1015,19 @@ where
             pattern
                 .into_tokens()
                 .into_iter()
-                .map(|token| token.unannotate())
+                .map(Token::unannotate)
                 .collect::<Vec<_>>()
         })
         .collect::<Result<Vec<_>, _>>()?;
     let token = token::any(tokens);
-    let regex = Any::compile(&token);
+    let regex = Any::compile(&token)?;
     Ok(Any { token, regex })
 }
 
 /// Returns `true` if a path matches a glob expression.
 ///
 /// This function directly matches an expression without exposing an
-/// intermediate [`Glob`]. Prefer [`is_match`] if an expression is matched
+/// intermediate [`Glob`]. Prefer [`Glob::is_match`] if an expression is matched
 /// more than once. The given path must be convertible into a [`CandidatePath`].
 ///
 /// # Errors
@@ -1226,8 +1035,11 @@ where
 /// Returns an error if the glob expression could not be parsed or is
 /// malformed. See the documentation for [`ParseError`] and [`RuleError`].
 ///
-/// `is_match`: Glob::is_match
-#[inline]
+/// [`CandidatePath`]: crate::CandidatePath
+/// [`Glob`]: crate::Glob
+/// [`Glob::is_match`]: crate::Glob::is_match
+/// [`ParseError`]: crate::ParseError
+/// [`RuleError`]: crate::RuleError
 pub fn is_match<'p>(
     expression: &str,
     path: impl Into<CandidatePath<'p>>,
@@ -1239,7 +1051,7 @@ pub fn is_match<'p>(
 /// Gets text in a [`CandidatePath`] that matches a glob expression.
 ///
 /// This function directly matches an expression without exposing an
-/// intermediate [`Glob`]. Prefer [`matched`] if an expression is matched
+/// intermediate [`Glob`]. Prefer [`Glob::matched`] if an expression is matched
 /// more than once. Returns `None` if the [`CandidatePath`] does not match
 /// expression.
 ///
@@ -1258,8 +1070,11 @@ pub fn is_match<'p>(
 /// if let Some(matched) = wax::matched(expression, &path).unwrap() { /* ... */ }
 /// ```
 ///
-/// `matched`: crate::Glob::matched
-#[inline]
+/// [`CandidatePath`]: crate::CandidatePath
+/// [`Glob`]: crate::Glob
+/// [`Glob::matched`]: crate::Glob::matched
+/// [`ParseError`]: crate::ParseError
+/// [`RuleError`]: crate::RuleError
 pub fn matched<'i, 'p>(
     expression: &'i str,
     path: &'p CandidatePath<'_>,
@@ -1277,13 +1092,13 @@ pub fn matched<'i, 'p>(
 ///
 /// # Errors
 ///
-/// Returns an error if the glob expression could not be parsed or is
-/// malformed. See the documentation for [`ParseError`] and [`RuleError`].
+/// Returns an error if the glob expression could not be parsed or is malformed.
+/// See the documentation for [`ParseError`] and [`RuleError`].
 ///
 /// # Examples
 ///
 /// ```rust,no_run
-/// for entry in wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures", usize::MAX).unwrap() {
+/// for entry in wax::walk("**/*.(?i){jpg,jpeg}", "./Pictures").unwrap() {
 ///     let entry = entry.unwrap();
 ///     println!("JPEG: {:?}", entry.path());
 /// }
@@ -1293,15 +1108,45 @@ pub fn matched<'i, 'p>(
 /// [`ParseError`]: crate::ParseError
 /// [`RuleError`]: crate::RuleError
 /// [`WalkEntry`]: crate::WalkEntry
-#[inline]
-pub fn walk<P: AsRef<Path>>(
+pub fn walk(expression: &str, directory: impl AsRef<Path>) -> Result<Walk<'static>, GlobError> {
+    walk_with_behavior(expression, directory, WalkBehavior::default())
+}
+
+/// Gets an iterator over matching files in a directory tree.
+///
+/// This function is the same as [`walk`], but it additionally accepts a
+/// [`WalkBehavior`]. This can be used to configure how the traversal interacts
+/// with symbolic links, the maximum depth from the root, etc.
+///
+/// # Errors
+///
+/// Returns an error if the glob expression could not be parsed or is malformed.
+/// See the documentation for [`ParseError`] and [`RuleError`].
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use wax::LinkBehavior;
+///
+/// for entry in wax::walk_with_behavior("**/*.txt", "/var/log", LinkBehavior::ReadTarget).unwrap()
+/// {
+///     let entry = entry.unwrap();
+///     println!("Log: {:?}", entry.path());
+/// }
+/// ```
+///
+/// [`ParseError`]: crate::ParseError
+/// [`RuleError`]: crate::RuleError
+/// [`walk`]: crate::walk()
+/// [`WalkBehavior`]: crate::WalkBehavior
+pub fn walk_with_behavior(
     expression: &str,
-    directory: P,
-    depth: usize,
+    directory: impl AsRef<Path>,
+    behavior: impl Into<WalkBehavior>,
 ) -> Result<Walk<'static>, GlobError> {
-    let (prefix, glob) = Glob::partitioned(expression)?;
+    let (prefix, glob) = Glob::new(expression)?.partition();
     Ok(glob
-        .walk(directory.as_ref().join(prefix), depth)
+        .walk_with_behavior(directory.as_ref().join(prefix), behavior)
         .into_owned())
 }
 
@@ -1342,7 +1187,6 @@ pub fn walk<P: AsRef<Path>>(
 /// ```
 // It is possible to call this function using a mutable reference, which may
 // appear to mutate the parameter in place.
-#[inline]
 #[must_use]
 pub fn escape(unescaped: &str) -> Cow<str> {
     const ESCAPE: char = '\\';
@@ -1356,13 +1200,13 @@ pub fn escape(unescaped: &str) -> Cow<str> {
             escaped.push(x);
         }
         escaped.into()
-    } else {
+    }
+    else {
         unescaped.into()
     }
 }
 
 // TODO: Is it possible for `:` and `,` to be contextual meta-characters?
-
 /// Returns `true` if the given character is a meta-character.
 ///
 /// This function does **not** return `true` for contextual meta-characters that
@@ -1371,8 +1215,6 @@ pub fn escape(unescaped: &str) -> Cow<str> {
 /// [`is_contextual_meta_character`].
 ///
 /// [`is_contextual_meta_character`]: crate::is_contextual_meta_character
-#[inline]
-#[must_use]
 pub const fn is_meta_character(x: char) -> bool {
     matches!(
         x,
@@ -1386,8 +1228,8 @@ pub const fn is_meta_character(x: char) -> bool {
 /// as hyphens `-` in character class expressions. Elsewhere, they are
 /// interpreted as literals. To detect non-contextual meta-characters, use
 /// [`is_meta_character`].
-#[inline]
-#[must_use]
+///
+/// [`is_meta_character`]: crate::is_meta_character
 pub const fn is_contextual_meta_character(x: char) -> bool {
     matches!(x, '-')
 }
@@ -1400,61 +1242,28 @@ fn parse_and_check(expression: &str) -> Result<Tokenized, GlobError> {
 
 #[cfg(feature = "diagnostics-report")]
 fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
-    let (tokenized, parse_error_diagnostic) = match token::parse(expression) {
-        Ok(tokenized) => (Some(tokenized), None),
-        Err(diagnostic) => (None, Some(Box::new(diagnostic) as BoxedDiagnostic)),
-    };
-    let rule_error_diagnostic = tokenized.as_ref().and_then(|tokenized| {
-        rule::check(tokenized)
-            .err()
-            .map(|diagnostic| Box::new(diagnostic) as BoxedDiagnostic)
-    });
-    let non_error_diagnostics = tokenized.as_ref().into_iter().flat_map(report::diagnostics);
-    let diagnostics = non_error_diagnostics
-        .chain(rule_error_diagnostic)
-        .chain(parse_error_diagnostic)
-        .collect();
-    if let Some(tokenized) = tokenized {
-        Ok((tokenized, diagnostics))
-    } else {
-        Err(diagnostics.try_into().expect("parse failed with no error"))
-    }
+    token::parse(expression)
+        .into_error_diagnostic()
+        .and_then_diagnose(|tokenized| {
+            rule::check(&tokenized)
+                .into_error_diagnostic()
+                .map_value(|_| tokenized)
+        })
+        .and_then_diagnose(|tokenized| {
+            report::diagnostics(&tokenized)
+                .into_non_error_diagnostic()
+                .map_value(|_| tokenized)
+        })
 }
 
 // TODO: Construct paths from components in tests. In practice, using string
 //       literals works, but is technically specific to platforms that support
 //       `/` as a separator.
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use crate::{Adjacency, Any, CandidatePath, Glob, IteratorExt as _, Pattern};
-
-    #[test]
-    fn adjacent() {
-        let mut adjacent = Option::<i32>::None.into_iter().adjacent();
-        assert_eq!(adjacent.next(), None);
-
-        let mut adjacent = Some(0_i32).into_iter().adjacent();
-        assert_eq!(adjacent.next(), Some(Adjacency::Only { item: 0_i32 }));
-        assert_eq!(adjacent.next(), None);
-
-        let mut adjacent = (0_i32..3_i32).adjacent();
-        assert_eq!(
-            adjacent.next(),
-            Some(Adjacency::First { item: 0_i32, right: 1_i32 })
-        );
-        assert_eq!(
-            adjacent.next(),
-            Some(Adjacency::Middle { left: 0_i32, item: 1_i32, right: 2_i32 })
-        );
-        assert_eq!(
-            adjacent.next(),
-            Some(Adjacency::Last { left: 1_i32, item: 2_i32 })
-        );
-        assert_eq!(adjacent.next(), None);
-    }
+    use crate::{Any, CandidatePath, Glob, GlobError, Pattern};
 
     #[test]
     fn escape() {
@@ -1635,6 +1444,8 @@ mod tests {
         assert!(Glob::new("a//b").is_err());
         assert!(Glob::new("a/b//").is_err());
         assert!(Glob::new("a//**").is_err());
+        assert!(Glob::new("{//}a").is_err());
+        assert!(Glob::new("{**//}").is_err());
     }
 
     #[test]
@@ -1646,6 +1457,8 @@ mod tests {
         assert!(Glob::new("**/*/***").is_err());
         assert!(Glob::new("**$").is_err());
         assert!(Glob::new("**/$**").is_err());
+        assert!(Glob::new("{*$}").is_err());
+        assert!(Glob::new("<*$:1,>").is_err());
     }
 
     #[test]
@@ -1718,6 +1531,11 @@ mod tests {
     }
 
     #[test]
+    fn reject_glob_with_invalid_repetition_bounds_tokens() {
+        assert!(Glob::new("<a/:0,0>").is_err());
+    }
+
+    #[test]
     fn reject_glob_with_invalid_repetition_zom_tokens() {
         assert!(Glob::new("<*:0,>").is_err());
         assert!(Glob::new("<a/*:0,>*").is_err());
@@ -1748,6 +1566,20 @@ mod tests {
     }
 
     #[test]
+    fn reject_glob_with_oversized_invariant_repetition_tokens() {
+        assert!(matches!(Glob::new("<a:65536>"), Err(GlobError::Rule(_))));
+        assert!(matches!(Glob::new("<long:16500>"), Err(GlobError::Rule(_))));
+        assert!(matches!(
+            Glob::new("a<long:16500>b"),
+            Err(GlobError::Rule(_)),
+        ));
+        assert!(matches!(
+            Glob::new("{<a:65536>,<long:16500>}"),
+            Err(GlobError::Rule(_)),
+        ));
+    }
+
+    #[test]
     fn reject_glob_with_invalid_flags() {
         assert!(Glob::new("(?)a").is_err());
         assert!(Glob::new("(?-)a").is_err());
@@ -1762,6 +1594,14 @@ mod tests {
         assert!(Glob::new("**(?i)?").is_err());
         assert!(Glob::new("a(?i)**").is_err());
         assert!(Glob::new("**(?i)a").is_err());
+    }
+
+    #[test]
+    fn reject_glob_with_oversized_program() {
+        assert!(matches!(
+            Glob::new("<a*:1000000>"),
+            Err(GlobError::Compile(_))
+        ));
     }
 
     #[test]
@@ -2054,7 +1894,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_variant_and_invariant_parts() {
-        let (prefix, glob) = Glob::partitioned("a/b/x?z/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("a/b/x?z/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new("a/b"));
 
@@ -2064,7 +1904,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_only_variant_wildcard_parts() {
-        let (prefix, glob) = Glob::partitioned("x?z/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("x?z/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new(""));
 
@@ -2074,7 +1914,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_only_invariant_literal_parts() {
-        let (prefix, glob) = Glob::partitioned("a/b").unwrap();
+        let (prefix, glob) = Glob::new("a/b").unwrap().partition();
 
         assert_eq!(prefix, Path::new("a/b"));
 
@@ -2084,7 +1924,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_variant_alternative_parts() {
-        let (prefix, glob) = Glob::partitioned("{x,z}/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("{x,z}/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new(""));
 
@@ -2094,7 +1934,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_invariant_alternative_parts() {
-        let (prefix, glob) = Glob::partitioned("{a/b}/c").unwrap();
+        let (prefix, glob) = Glob::new("{a/b}/c").unwrap().partition();
 
         assert_eq!(prefix, Path::new("a/b/c"));
 
@@ -2104,7 +1944,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_invariant_repetition_parts() {
-        let (prefix, glob) = Glob::partitioned("</a/b:3>/c").unwrap();
+        let (prefix, glob) = Glob::new("</a/b:3>/c").unwrap().partition();
 
         assert_eq!(prefix, Path::new("/a/b/a/b/a/b/c"));
 
@@ -2114,7 +1954,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_literal_dots_and_tree_tokens() {
-        let (prefix, glob) = Glob::partitioned("../**/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("../**/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new(".."));
 
@@ -2124,7 +1964,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_tree_token() {
-        let (prefix, glob) = Glob::partitioned("/**/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("/**/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new("/"));
         assert!(!glob.has_root());
@@ -2135,7 +1975,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_zom_token() {
-        let (prefix, glob) = Glob::partitioned("/*/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("/*/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new("/"));
         assert!(!glob.has_root());
@@ -2146,7 +1986,7 @@ mod tests {
 
     #[test]
     fn partition_glob_with_rooted_literal_token() {
-        let (prefix, glob) = Glob::partitioned("/root/**/*.ext").unwrap();
+        let (prefix, glob) = Glob::new("/root/**/*.ext").unwrap().partition();
 
         assert_eq!(prefix, Path::new("/root"));
         assert!(!glob.has_root());
@@ -2156,27 +1996,53 @@ mod tests {
     }
 
     #[test]
-    fn query_glob_is_invariant() {
-        assert!(Glob::new("").unwrap().is_invariant());
-        assert!(Glob::new("/a/file.ext").unwrap().is_invariant());
-        assert!(Glob::new("/a/{file.ext}").unwrap().is_invariant());
-        assert!(Glob::new("{a/b/file.ext}").unwrap().is_invariant());
-        assert!(Glob::new("<a/b:2>").unwrap().is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a]/file.ext").unwrap().is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a-a]/file.ext").unwrap().is_invariant());
-
-        assert!(!Glob::new("/a/{b,c}").unwrap().is_invariant());
-        assert!(!Glob::new("<a/b:1,>").unwrap().is_invariant());
-        assert!(!Glob::new("/[ab]/file.ext").unwrap().is_invariant());
-        assert!(!Glob::new("**").unwrap().is_invariant());
-        assert!(!Glob::new("/a/*.ext").unwrap().is_invariant());
-        assert!(!Glob::new("/a/b*").unwrap().is_invariant());
-        #[cfg(unix)]
-        assert!(!Glob::new("/a/(?i)file.ext").unwrap().is_invariant());
+    fn query_glob_variance() {
+        assert!(Glob::new("").unwrap().variance().is_invariant());
+        assert!(Glob::new("/a/file.ext").unwrap().variance().is_invariant());
+        assert!(Glob::new("/a/{file.ext}")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        assert!(Glob::new("{a/b/file.ext}")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        assert!(Glob::new("{a,a}").unwrap().variance().is_invariant());
         #[cfg(windows)]
-        assert!(!Glob::new("/a/(?-i)file.ext").unwrap().is_invariant());
+        assert!(Glob::new("{a,A}").unwrap().variance().is_invariant());
+        assert!(Glob::new("<a/b:2>").unwrap().variance().is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a-a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+        #[cfg(unix)]
+        assert!(Glob::new("/[a-aaa-a]/file.ext")
+            .unwrap()
+            .variance()
+            .is_invariant());
+
+        assert!(Glob::new("/a/{b,c}").unwrap().variance().is_variant());
+        assert!(Glob::new("<a/b:1,>").unwrap().variance().is_variant());
+        assert!(Glob::new("/[ab]/file.ext").unwrap().variance().is_variant());
+        assert!(Glob::new("**").unwrap().variance().is_variant());
+        assert!(Glob::new("/a/*.ext").unwrap().variance().is_variant());
+        assert!(Glob::new("/a/b*").unwrap().variance().is_variant());
+        #[cfg(unix)]
+        assert!(Glob::new("/a/(?i)file.ext")
+            .unwrap()
+            .variance()
+            .is_variant());
+        #[cfg(windows)]
+        assert!(Glob::new("/a/(?-i)file.ext")
+            .unwrap()
+            .variance()
+            .is_variant());
     }
 
     #[test]
