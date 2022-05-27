@@ -642,6 +642,12 @@ impl<'t> Glob<'t> {
         Ok(Glob { tokenized, regex })
     }
 
+    /// Return the inner `Regex`
+    #[must_use]
+    pub const fn regex(&self) -> &Regex {
+        &self.regex
+    }
+
     /// Constructs a [`Glob`] from a glob expression with diagnostics.
     ///
     /// This function is the same as [`Glob::new`], but additionally returns
