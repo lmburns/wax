@@ -6,13 +6,30 @@
 //! documentation](https://github.com/olson-sean-k/wax/blob/master/README.md)
 //! for details about glob expressions and patterns.
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/olson-sean-k/wax/master/doc/wax-favicon.svg?sanitize=true"
 )]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/olson-sean-k/wax/master/doc/wax.svg?sanitize=true"
 )]
-#![cfg_attr(docsrs, feature(doc_cfg))]
+#![deny(
+    clippy::cast_lossless,
+    clippy::checked_conversions,
+    clippy::cloned_instead_of_copied,
+    clippy::explicit_into_iter_loop,
+    clippy::filter_map_next,
+    clippy::flat_map_option,
+    clippy::from_iter_instead_of_collect,
+    clippy::if_not_else,
+    clippy::manual_ok_or,
+    clippy::map_unwrap_or,
+    clippy::match_same_arms,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_else,
+    clippy::unreadable_literal,
+    clippy::unused_self
+)]
 
 mod capture;
 mod diagnostics;
@@ -38,18 +55,19 @@ use thiserror::Error;
 use crate::diagnostics::inspect;
 #[cfg(feature = "diagnostics-report")]
 use crate::diagnostics::report::{self, IteratorExt as _, ResultExt as _};
-use crate::token::{Annotation, IntoTokens, InvariantText, Token, Tokenized};
+use crate::encode::CompileError;
+use crate::rule::RuleError;
+#[cfg(feature = "diagnostics-inspect")]
+use crate::token::InvariantText;
+use crate::token::{Annotation, IntoTokens, ParseError, Token, Tokenized};
 
 pub use crate::capture::MatchedText;
 #[cfg(feature = "diagnostics-inspect")]
-pub use crate::diagnostics::inspect::CapturingToken;
+pub use crate::diagnostics::inspect::{CapturingToken, Variance};
 #[cfg(feature = "diagnostics-report")]
 pub use crate::diagnostics::report::{DiagnosticResult, DiagnosticResultExt};
 #[cfg(feature = "diagnostics-inspect")]
 pub use crate::diagnostics::Span;
-pub use crate::encode::CompileError;
-pub use crate::rule::RuleError;
-pub use crate::token::ParseError;
 pub use crate::walk::{
     FilterTarget, FilterTree, IteratorExt, LinkBehavior, Negation, Walk, WalkBehavior, WalkEntry,
     WalkError,
@@ -181,7 +199,7 @@ impl<T> Terminals<T> {
 ///
 /// Matching is a logical operation and does **not** interact with a file
 /// system. To handle path operations, use [`Path`] and/or [`PathBuf`] and their
-/// associated operations. See [`Glob::partition`] for more about globs and path
+/// associated functions. See [`Glob::partition`] for more about globs and path
 /// operations.
 ///
 /// [`Glob::partition`]: crate::Glob::partition
@@ -190,102 +208,83 @@ impl<T> Terminals<T> {
 pub trait Pattern<'t>: IntoTokens<'t> {
     /// Returns `true` if a path matches the pattern.
     ///
-    /// The given types must be convertible into a [`CandidatePath`].
+    /// The given path must be convertible into a [`CandidatePath`].
     ///
     /// [`CandidatePath`]: crate::CandidatePath
     fn is_match<'p>(&self, path: impl Into<CandidatePath<'p>>) -> bool;
 
-    /// Gets matched text in a [`CandidatePath`].
+    /// Gets [matched text][`MatchedText`] in a [`CandidatePath`].
     ///
     /// Returns `None` if the [`CandidatePath`] does not match the pattern.
     ///
     /// [`CandidatePath`]: crate::CandidatePath
+    /// [`MatchedText`]: crate::MatchedText
     fn matched<'p>(&self, path: &'p CandidatePath<'_>) -> Option<MatchedText<'p>>;
 
     /// Gets the variance of the pattern.
     ///
-    /// An invariant glob expression is essentially constant or literal and has
-    /// no patterns that resolve differently than an equivalent path does using
-    /// the platform's file system APIs. For example, the expression
-    /// `path/to/file.txt` is always invariant and resolves identically to the
-    /// paths `path/to/file.txt` and `path\to\file.txt` on Unix and Windows,
-    /// respectively.
+    /// An invariant glob expression has no patterns that resolve differently
+    /// than an equivalent path using the platform's file system APIs. For
+    /// example, the expression `path/to/file.txt` is always invariant and
+    /// resolves identically to the paths `path/to/file.txt` and
+    /// `path\to\file.txt` on Unix and Windows, respectively.
     ///
     /// A variant glob expression does not resolve the same way as any path used
     /// with the platform's file system APIs. This is typically because the
     /// expression matches multiple texts using a regular pattern, such as in
     /// the expression `**/*.rs`.
     ///
-    /// Note that this considers potentially invariant patterns such as
-    /// `path/[t][o]/{file.txt}`, which is invariant on Unix. Variance also
-    /// considers flags and the case sensitivity of literals. For example,
-    /// `(?i)file.text` is invariant on Windows but is not on Unix. Variance is
-    /// therefore platform dependent, as it is based on the behavior of file
-    /// system APIs.
+    /// Note that this considers non-literal invariant patterns such as in
+    /// `path/[t][o]/{file.txt}`, which is invariant on Unix. Variance considers
+    /// flags and the case sensitivity of literals. For example, `(?i)file.text`
+    /// is invariant on Windows but is not on Unix. Variance is therefore
+    /// platform dependent, as it is based on the behavior of file system APIs.
+    #[cfg(feature = "diagnostics-inspect")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
     fn variance(&self) -> Variance;
 }
 
-// TODO: It is not possible to use the `#[doc(cfg())]` attribute on the
-//       `Diagnostic` implementation generated by procedural macros.
-//       `Diagnostic` could be implemented without macros, but `GlobError` is
-//       particularly well suited to them. Use a manual implementation with
-//       `#[doc(cfg())]` to mark the implementation as feature dependent in
-//       documentation if that changes.
-/// Errors concerning [`Glob`]s and [`Pattern`]s.
+// TODO: `Diagnostic` is implemented with macros for brevity and to ensure
+//       complete coverage of features. See comments on `BuildError` below.
+/// General errors concerning [`Pattern`]s.
 ///
-/// This is the primary error type used by Wax APIs. Each variant exposes a
-/// particular error type that describes the details of its associated error
-/// condition.
+/// This is the most general error and each of its variants exposes a particular
+/// error type that describes the details of its associated error condition.
+/// This error is not used in any Wax APIs directly, but can be used to
+/// encapsulate the more specific errors that are.
 ///
 /// When the `diagnostics-report` feature is enabled, this and other error types
-/// implement the [`Diagnostic`] trait.
+/// implement the [`Diagnostic`] trait. Due to a technical limitation, this may
+/// not be properly annotated in API documentation.
+///
+/// # Examples
+///
+/// To encapsulate different errors in the Wax API behind a function, convert
+/// them into a `GlobError` via `?`.
+///
+/// ```rust
+/// use std::path::Path;
+/// use wax::{Glob, GlobError};
+///
+/// fn read_all(directory: impl AsRef<Path>) -> Result<Vec<u8>, GlobError<'static>> {
+///     let mut data = Vec::new();
+///     let glob = Glob::new("**/*.data.bin")?;
+///     for entry in glob.walk(directory) {
+///         let entry = entry?;
+///         // ...
+///     }
+///     Ok(data)
+/// }
+/// ```
 ///
 /// [`Diagnostic`]: miette::Diagnostic
-/// [`Glob`]: crate::Glob
 /// [`Pattern`]: crate::Pattern
-#[derive(Debug, Error)]
-#[non_exhaustive]
 #[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
+#[derive(Debug, Error)]
+#[error(transparent)]
 pub enum GlobError<'t> {
-    /// A glob expression failed to compile.
-    ///
-    /// This error occurs when a glob expression (or some part of a glob
-    /// expression) cannot be compiled. See the documentation for
-    /// [`CompileError`].
-    ///
-    /// [`CompileError`]: crate::CompileError
-    #[error(transparent)]
     #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
-    Compile(CompileError),
-    /// A glob expression failed to parse.
-    ///
-    /// This error occurs when attempting to construct a [`Glob`] from a glob
-    /// expression that cannot be parsed. See the documentation for
-    /// [`ParseError`].
-    ///
-    /// [`Glob`]: crate::Glob
-    /// [`ParseError`]: crate::ParseError
-    #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
-    Parse(ParseError<'t>),
-    /// A glob expression parsed but is malformed.
-    ///
-    /// This error occurs when a glob expression violates rules regarding
-    /// patterns, such as using adjacent zero-or-more wildcards. See the
-    /// documentation for [`RuleError`].
-    ///
-    /// [`RuleError`]: crate::RuleError
-    #[error(transparent)]
-    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
-    Rule(RuleError<'t>),
-    /// An error occurred while walking a directory tree.
-    ///
-    /// This error occurs while matching files in a directory tree against a
-    /// [`Glob`]. See the documentation for [`WalkError`].
-    ///
-    /// [`Glob`]: crate::Glob
-    /// [`WalkError`]: crate::WalkError
-    #[error("failed to walk directory tree: {0}")]
+    Build(BuildError<'t>),
     #[cfg_attr(feature = "diagnostics-report", diagnostic(code = "wax::glob::walk"))]
     Walk(WalkError),
 }
@@ -294,35 +293,15 @@ impl<'t> GlobError<'t> {
     /// Clones any borrowed data into an owning instance.
     pub fn into_owned(self) -> GlobError<'static> {
         match self {
-            GlobError::Compile(error) => GlobError::Compile(error),
-            GlobError::Parse(error) => GlobError::Parse(error.into_owned()),
-            GlobError::Rule(error) => GlobError::Rule(error.into_owned()),
+            GlobError::Build(error) => GlobError::Build(error.into_owned()),
             GlobError::Walk(error) => GlobError::Walk(error),
         }
     }
 }
 
-impl From<CompileError> for GlobError<'_> {
-    fn from(error: CompileError) -> Self {
-        GlobError::Compile(error)
-    }
-}
-
-impl From<Infallible> for GlobError<'_> {
-    fn from(_: Infallible) -> Self {
-        unreachable!()
-    }
-}
-
-impl<'t> From<ParseError<'t>> for GlobError<'t> {
-    fn from(error: ParseError) -> Self {
-        GlobError::Parse(error.into_owned())
-    }
-}
-
-impl<'t> From<RuleError<'t>> for GlobError<'t> {
-    fn from(error: RuleError<'t>) -> Self {
-        GlobError::Rule(error)
+impl<'t> From<BuildError<'t>> for GlobError<'t> {
+    fn from(error: BuildError<'t>) -> Self {
+        GlobError::Build(error)
     }
 }
 
@@ -332,14 +311,133 @@ impl From<WalkError> for GlobError<'_> {
     }
 }
 
-/// Path that can be matched against a [`Glob`] or [`Pattern`].
+// TODO: `Diagnostic` is implemented with macros for brevity and to ensure
+//       complete coverage of features. However, this means that documentation
+//       does not annotate the implementation with a feature flag requirement.
+//       If possible, perhaps in a later version of Rust, close this gap.
+/// Describes errors that occur when building a [`Pattern`] from a glob
+/// expression.
+///
+/// Glob expressions may fail to build if they cannot be parsed, violate rules,
+/// or cannot be compiled. Parsing errors occur when a glob expression has
+/// invalid syntax. Patterns must also follow rules as described in the
+/// [repository
+/// documentation](https://github.com/olson-sean-k/wax/blob/master/README.md),
+/// which are designed to avoid nonsense expressions and ambiguity. Lastly,
+/// compilation errors occur **only if the size of the compiled program is too
+/// large** (all other compilation errors are considered internal bugs and will
+/// panic).
+///
+/// When the `diagnostics-report` feature is enabled, this and other error types
+/// implement the [`Diagnostic`] trait. Due to a technical limitation, this may
+/// not be properly annotated in API documentation.
+///
+/// [`Diagnostic`]: miette::Diagnostic
+/// [`Pattern`]: crate::Pattern
+#[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
+#[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct BuildError<'t> {
+    kind: ErrorKind<'t>,
+}
+
+impl<'t> BuildError<'t> {
+    /// Clones any borrowed data into an owning instance.
+    ///
+    /// # Examples
+    ///
+    /// `BuildError` borrows data in the corresponding glob expression. To move a
+    /// `BuildError` beyond the scope of a glob expression, clone the data with
+    /// this function.
+    ///
+    /// ```rust
+    /// use wax::{BuildError, Glob};
+    ///
+    /// fn local() -> Result<(), BuildError<'static>> {
+    ///     let expression = String::from("*.txt");
+    ///     let glob = Glob::new(&expression).map_err(BuildError::into_owned)?;
+    ///     // ...
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn into_owned(self) -> BuildError<'static> {
+        let BuildError { kind } = self;
+        BuildError {
+            kind: kind.into_owned(),
+        }
+    }
+}
+
+impl<'t> From<ErrorKind<'t>> for BuildError<'t> {
+    fn from(kind: ErrorKind<'t>) -> Self {
+        BuildError { kind }
+    }
+}
+
+impl From<CompileError> for BuildError<'_> {
+    fn from(error: CompileError) -> Self {
+        BuildError {
+            kind: ErrorKind::Compile(error),
+        }
+    }
+}
+
+impl From<Infallible> for BuildError<'_> {
+    fn from(_: Infallible) -> Self {
+        unreachable!()
+    }
+}
+
+impl<'t> From<ParseError<'t>> for BuildError<'t> {
+    fn from(error: ParseError<'t>) -> Self {
+        BuildError {
+            kind: ErrorKind::Parse(error),
+        }
+    }
+}
+
+impl<'t> From<RuleError<'t>> for BuildError<'t> {
+    fn from(error: RuleError<'t>) -> Self {
+        BuildError {
+            kind: ErrorKind::Rule(error),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+#[cfg_attr(feature = "diagnostics-report", derive(Diagnostic))]
+enum ErrorKind<'t> {
+    #[error(transparent)]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    Compile(CompileError),
+    #[error(transparent)]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    Parse(ParseError<'t>),
+    #[error(transparent)]
+    #[cfg_attr(feature = "diagnostics-report", diagnostic(transparent))]
+    Rule(RuleError<'t>),
+}
+
+impl<'t> ErrorKind<'t> {
+    pub fn into_owned(self) -> ErrorKind<'static> {
+        match self {
+            ErrorKind::Compile(error) => ErrorKind::Compile(error),
+            ErrorKind::Parse(error) => ErrorKind::Parse(error.into_owned()),
+            ErrorKind::Rule(error) => ErrorKind::Rule(error.into_owned()),
+        }
+    }
+}
+
+/// Path that can be matched against a [`Pattern`].
 ///
 /// `CandidatePath`s are always UTF-8 encoded. On some platforms this requires a
 /// lossy conversion that uses Unicode replacement codepoints `�` whenever a
 /// part of a path cannot be represented as valid UTF-8 (such as Windows). This
-/// means that some byte sequences cannot be matched.
+/// means that some byte sequences cannot be matched, though this is uncommon in
+/// practice.
 ///
-/// [`Glob`]: crate::Glob
 /// [`Pattern`]: crate::Pattern
 #[derive(Clone)]
 pub struct CandidatePath<'b> {
@@ -469,8 +567,8 @@ impl From<token::Variance<InvariantText<'_>>> for Variance {
 /// `Glob`s are constructed from strings called glob expressions that resemble
 /// Unix paths consisting of nominal components delimited by separators. Glob
 /// expressions support various patterns that match and capture specified text
-/// in a path. These patterns can be used to match individual paths and to match
-/// and walk directory trees.
+/// in a path. These patterns can be used to logically match individual paths
+/// and to semantically match and walk directory trees.
 ///
 /// # Examples
 ///
@@ -533,22 +631,15 @@ impl<'t> Glob<'t> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the glob expression could not be parsed or is
-    /// malformed. See the documentation for [`ParseError`] and [`RuleError`].
+    /// Returns an error if the glob expression fails to build. See
+    /// [`BuildError`].
     ///
     /// [`Glob`]: crate::Glob
-    /// [`ParseError`]: crate::ParseError
-    /// [`RuleError`]: crate::RuleError
-    pub fn new(expression: &'t str) -> Result<Self, GlobError<'t>> {
+    /// [`BuildError`]: crate::BuildError
+    pub fn new(expression: &'t str) -> Result<Self, BuildError<'t>> {
         let tokenized = parse_and_check(expression)?;
         let regex = Glob::compile(tokenized.tokens())?;
         Ok(Glob { tokenized, regex })
-    }
-
-    /// Return the inner `Regex`
-    #[must_use]
-    pub const fn regex(&self) -> &Regex {
-        &self.regex
     }
 
     /// Constructs a [`Glob`] from a glob expression with diagnostics.
@@ -612,23 +703,6 @@ impl<'t> Glob<'t> {
     ///
     /// # Examples
     ///
-    /// To match files in a directory tree while respecting semantic components
-    /// like `..` on platforms that support it, the invariant prefix can be
-    /// applied to a working directory. In the following example, [`walk`] reads
-    /// and therefore resolves the path `./../site/img`, respecting the meaning
-    /// of the `.` and `..` components.
-    ///
-    /// ```rust,no_run
-    /// use std::path::Path;
-    /// use wax::Glob;
-    ///
-    /// let directory = Path::new("."); // Working directory.
-    /// let (prefix, glob) = Glob::new("../site/img/*.{jpg,png}").unwrap().partition();
-    /// for entry in glob.walk(directory.join(prefix)) {
-    ///     // ...
-    /// }
-    /// ```
-    ///
     /// To match paths against a [`Glob`] while respecting semantic components,
     /// the invariant prefix and candidate path can be canonicalized. The
     /// following example canonicalizes both the working directory joined with
@@ -656,10 +730,6 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     ///
-    /// The above examples illustrate particular approaches, but the invariant
-    /// prefix can be used to interact with native paths as needed for a given
-    /// application.
-    ///
     /// [`Glob`]: crate::Glob
     /// [`ParseError`]: crate::ParseError
     /// [`PathBuf`]: std::path::PathBuf
@@ -673,6 +743,23 @@ impl<'t> Glob<'t> {
     }
 
     /// Clones any borrowed data into an owning instance.
+    ///
+    /// # Examples
+    ///
+    /// `Glob`s borrow data in the corresponding glob expression. To move a
+    /// `Glob` beyond the scope of a glob expression, clone the data with this
+    /// function.
+    ///
+    /// ```rust
+    /// use wax::{BuildError, Glob};
+    ///
+    /// fn local() -> Result<Glob<'static>, BuildError<'static>> {
+    ///     let expression = String::from("**/*.txt");
+    ///     Glob::new(&expression)
+    ///         .map(Glob::into_owned)
+    ///         .map_err(BuildError::into_owned)
+    /// }
+    /// ```
     pub fn into_owned(self) -> Glob<'static> {
         let Glob { tokenized, regex } = self;
         Glob {
@@ -683,9 +770,9 @@ impl<'t> Glob<'t> {
 
     /// Gets an iterator over matching files in a directory tree.
     ///
-    /// This function matches a [`Glob`] against an entire directory tree,
-    /// returning each matching file as a [`WalkEntry`]. [`Glob`]s are the only
-    /// patterns that support this operation; it is not possible to match
+    /// This function matches a [`Glob`] against a directory tree, returning
+    /// each matching file as a [`WalkEntry`]. [`Glob`]s are the only patterns
+    /// that support this semantic operation; it is not possible to match
     /// combinators over directory trees.
     ///
     /// As with [`Path::join`] and [`PathBuf::push`], the base directory can be
@@ -713,11 +800,11 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     ///
-    /// Because [`Glob`]s do not support general negations, the [`not`] iterator
-    /// adaptor can be used when walking a directory tree to filter
-    /// [`WalkEntry`]s using arbitary patterns. **This should be preferred over
-    /// external iterator filtering, because it does not traverse directory
-    /// trees that match terminal negations.**
+    /// Glob expressions do not support general negations, but the [`not`]
+    /// iterator adaptor can be used when walking a directory tree to filter
+    /// [`WalkEntry`]s using arbitary patterns. **This should generally be
+    /// preferred over functions like [`Iterator::filter`], because it avoids
+    /// unnecessary reads of directory trees when matching terminal negations.**
     ///
     /// ```rust,no_run
     /// use wax::Glob;
@@ -736,6 +823,7 @@ impl<'t> Glob<'t> {
     /// [`Glob`]: crate::Glob
     /// [`Glob::walk_with_behavior`]: crate::Glob::walk_with_behavior
     /// [`has_root`]: crate::Glob::has_root
+    /// [`Iterator::filter`]: std::iter::Iterator::filter
     /// [`not`]: crate::Walk::not
     /// [`Path::join`]: std::path::Path::join
     /// [`PathBuf::push`]: std::path::PathBuf::push
@@ -751,6 +839,10 @@ impl<'t> Glob<'t> {
     /// This function is the same as [`Glob::walk`], but it additionally accepts
     /// a [`WalkBehavior`]. This can be used to configure how the traversal
     /// interacts with symbolic links, the maximum depth from the root, etc.
+    ///
+    /// Depth is relative to the root directory of the traversal, which is
+    /// determined by joining the given path and any invariant prefix of the
+    /// [`Glob`]. See [`Walk::root`].
     ///
     /// # Examples
     ///
@@ -778,8 +870,10 @@ impl<'t> Glob<'t> {
     /// }
     /// ```
     ///
+    /// [`Glob`]: crate::Glob
     /// [`Glob::walk`]: crate::Glob::walk
     /// [`LinkBehavior`]: crate::LinkBehavior
+    /// [`Walk::root`]: crate::Walk::root
     /// [`WalkBehavior`]: crate::WalkBehavior
     pub fn walk_with_behavior(
         &self,
@@ -793,15 +887,14 @@ impl<'t> Glob<'t> {
     ///
     /// This function requires a receiving [`Glob`] and so does not report
     /// error-level [`Diagnostic`]s. It can be used to get non-error diagnostics
-    /// after constructing or [partitioning] a [`Glob`].
+    /// after constructing or [partitioning][`Glob::partition`] a [`Glob`].
     ///
     /// See [`Glob::diagnosed`].
     ///
     /// [`Diagnostic`]: miette::Diagnostic
     /// [`Glob`]: crate::Glob
     /// [`Glob::diagnosed`]: crate::Glob::diagnosed
-    ///
-    /// [partitioning]: crate::Glob::partition
+    /// [`Glob::partition`]: crate::Glob::partition
     #[cfg(feature = "diagnostics-report")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-report")))]
     pub fn diagnostics(&self) -> impl Iterator<Item = Box<dyn Diagnostic + '_>> {
@@ -811,20 +904,23 @@ impl<'t> Glob<'t> {
     /// Gets metadata for capturing sub-expressions.
     ///
     /// This function returns an iterator over capturing tokens, which describe
-    /// the index and location within the glob expression of sub-expressions
-    /// that capture matched text. For example, in the expression `src/**/*.rs`,
-    /// both `**` and `*` form captures.
+    /// the index and location of sub-expressions that capture [matched
+    /// text][`MatchedText`]. For example, in the expression `src/**/*.rs`, both
+    /// `**` and `*` form
+    /// captures.
+    ///
+    /// [`MatchedText`]: crate::MatchedText
     #[cfg(feature = "diagnostics-inspect")]
     #[cfg_attr(docsrs, doc(cfg(feature = "diagnostics-inspect")))]
     pub fn captures(&self) -> impl '_ + Clone + Iterator<Item = CapturingToken> {
         inspect::captures(self.tokenized.tokens())
     }
 
-    /// Returns `true` if the glob is rooted.
+    /// Returns `true` if the glob has a root.
     ///
-    /// As with Unix paths, a glob expression is rooted if it begins with a
-    /// separator `/`. Patterns may also root an expression, such as
-    /// `</root:1,>`.
+    /// As with Unix paths, a glob expression has a root if it begins with a
+    /// separator `/`. Patterns other than separators may also root an
+    /// expression, such as `/**` or `</root:1,>`.
     pub fn has_root(&self) -> bool {
         self.tokenized
             .tokens()
@@ -838,9 +934,8 @@ impl<'t> Glob<'t> {
     /// The most notable semantic literals are the relative path components `.`
     /// and `..`, which refer to a current and parent directory on Unix and
     /// Windows operating systems, respectively. These are interpreted as
-    /// literals in glob expressions, and so only match paths that contain these
-    /// exact nominal components and never paths that consider relative
-    /// relationships.
+    /// literals in glob expressions, and so only logically match paths that
+    /// contain these exact nominal components (semantic meaning is lost).
     ///
     /// See [`Glob::partition`].
     ///
@@ -851,12 +946,12 @@ impl<'t> Glob<'t> {
 }
 
 impl FromStr for Glob<'static> {
-    type Err = GlobError<'static>;
+    type Err = BuildError<'static>;
 
     fn from_str(expression: &str) -> Result<Self, Self::Err> {
         Glob::new(expression)
             .map(Glob::into_owned)
-            .map_err(GlobError::into_owned)
+            .map_err(BuildError::into_owned)
     }
 }
 
@@ -879,13 +974,14 @@ impl<'t> Pattern<'t> for Glob<'t> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 
+    #[cfg(feature = "diagnostics-inspect")]
     fn variance(&self) -> Variance {
         self.tokenized.variance().into()
     }
 }
 
 impl<'t> TryFrom<&'t str> for Glob<'t> {
-    type Error = GlobError<'t>;
+    type Error = BuildError<'t>;
 
     fn try_from(expression: &'t str) -> Result<Self, Self::Error> {
         Glob::new(expression)
@@ -930,6 +1026,7 @@ impl<'t> Pattern<'t> for Any<'t> {
         self.regex.captures(path.as_ref()).map(From::from)
     }
 
+    #[cfg(feature = "diagnostics-inspect")]
     fn variance(&self) -> Variance {
         self.token.variance::<InvariantText>().into()
     }
@@ -947,9 +1044,7 @@ impl<'t> Pattern<'t> for Any<'t> {
 /// into a [`Pattern`] type. The output [`Any`] implements [`Pattern`] by
 /// matching any of its component [`Pattern`]s. [`Any`] is often more ergonomic
 /// and efficient than matching against multiple [`Glob`]s or other
-/// [`Pattern`]s. Moreover, because `any` accepts any type that can be converted
-/// into a [`Pattern`], it is possible to combine opaque patterns from foreign
-/// code.
+/// [`Pattern`]s.
 ///
 /// [`Any`] groups all captures and therefore only exposes the complete text of
 /// a match. It is not possible to index a particular capturing token in the
@@ -976,16 +1071,16 @@ impl<'t> Pattern<'t> for Any<'t> {
 /// Opaque patterns can also be combined, such as [`Glob`]s from foreign code.
 ///
 /// ```rust
-/// use wax::{Glob, GlobError, Pattern};
+/// use wax::{BuildError, Glob, Pattern};
 ///
-/// fn unknown() -> Result<Glob<'static>, GlobError<'static>> {
+/// fn theirs() -> Result<Glob<'static>, BuildError<'static>> {
 ///     /* ... */
 ///     # Glob::new("")
 /// }
 ///
-/// let known = Glob::new("**/*.txt").unwrap();
-/// let unknown = unknown().unwrap();
-/// if wax::any::<Glob, _>([known, unknown])
+/// let theirs = theirs().unwrap();
+/// let mine = Glob::new("**/*.txt").unwrap();
+/// if wax::any::<Glob, _>([theirs, mine])
 ///     .unwrap()
 ///     .is_match("README.md")
 /// { /* ... */ }
@@ -993,7 +1088,7 @@ impl<'t> Pattern<'t> for Any<'t> {
 ///
 /// # Errors
 ///
-/// Returns an error if any of the inputs could not be converted into the target
+/// Returns an error if any of the inputs fail to build into the target
 /// [`Pattern`] type `P`. If the inputs are of type `P`, then this function is
 /// infallible.
 ///
@@ -1001,9 +1096,9 @@ impl<'t> Pattern<'t> for Any<'t> {
 /// [`Glob`]: crate::Glob
 /// [`IntoIterator`]: std::iter::IntoIterator
 /// [`Pattern`]: crate::Pattern
-pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, GlobError<'t>>
+pub fn any<'t, P, I>(patterns: I) -> Result<Any<'t>, BuildError<'t>>
 where
-    GlobError<'t>: From<<I::Item as TryInto<P>>::Error>,
+    BuildError<'t>: From<<I::Item as TryInto<P>>::Error>,
     P: Pattern<'t>,
     I: IntoIterator,
     I::Item: TryInto<P>,
@@ -1032,18 +1127,16 @@ where
 ///
 /// # Errors
 ///
-/// Returns an error if the glob expression could not be parsed or is
-/// malformed. See the documentation for [`ParseError`] and [`RuleError`].
+/// Returns an error if the glob expression fails to build. See [`BuildError`].
 ///
 /// [`CandidatePath`]: crate::CandidatePath
 /// [`Glob`]: crate::Glob
 /// [`Glob::is_match`]: crate::Glob::is_match
-/// [`ParseError`]: crate::ParseError
-/// [`RuleError`]: crate::RuleError
+/// [`BuildError`]: crate::BuildError
 pub fn is_match<'p>(
     expression: &str,
     path: impl Into<CandidatePath<'p>>,
-) -> Result<bool, GlobError> {
+) -> Result<bool, BuildError> {
     let glob = Glob::new(expression)?;
     Ok(glob.is_match(path))
 }
@@ -1057,8 +1150,7 @@ pub fn is_match<'p>(
 ///
 /// # Errors
 ///
-/// Returns an error if the glob expression could not be parsed or is
-/// malformed. See the documentation for [`ParseError`] and [`RuleError`].
+/// Returns an error if the glob expression fails to build. See [`BuildError`].
 ///
 /// # Examples
 ///
@@ -1073,12 +1165,11 @@ pub fn is_match<'p>(
 /// [`CandidatePath`]: crate::CandidatePath
 /// [`Glob`]: crate::Glob
 /// [`Glob::matched`]: crate::Glob::matched
-/// [`ParseError`]: crate::ParseError
-/// [`RuleError`]: crate::RuleError
+/// [`BuildError`]: crate::BuildError
 pub fn matched<'i, 'p>(
     expression: &'i str,
     path: &'p CandidatePath<'_>,
-) -> Result<Option<MatchedText<'p>>, GlobError<'i>> {
+) -> Result<Option<MatchedText<'p>>, BuildError<'i>> {
     let glob = Glob::new(expression)?;
     Ok(glob.matched(path))
 }
@@ -1092,8 +1183,7 @@ pub fn matched<'i, 'p>(
 ///
 /// # Errors
 ///
-/// Returns an error if the glob expression could not be parsed or is malformed.
-/// See the documentation for [`ParseError`] and [`RuleError`].
+/// Returns an error if the glob expression fails to build. See [`BuildError`].
 ///
 /// # Examples
 ///
@@ -1105,10 +1195,9 @@ pub fn matched<'i, 'p>(
 /// ```
 ///
 /// [`Glob`]: crate::Glob
-/// [`ParseError`]: crate::ParseError
-/// [`RuleError`]: crate::RuleError
+/// [`BuildError`]: crate::BuildError
 /// [`WalkEntry`]: crate::WalkEntry
-pub fn walk(expression: &str, directory: impl AsRef<Path>) -> Result<Walk<'static>, GlobError> {
+pub fn walk(expression: &str, directory: impl AsRef<Path>) -> Result<Walk<'static>, BuildError> {
     walk_with_behavior(expression, directory, WalkBehavior::default())
 }
 
@@ -1120,8 +1209,7 @@ pub fn walk(expression: &str, directory: impl AsRef<Path>) -> Result<Walk<'stati
 ///
 /// # Errors
 ///
-/// Returns an error if the glob expression could not be parsed or is malformed.
-/// See the documentation for [`ParseError`] and [`RuleError`].
+/// Returns an error if the glob expression fails to build. See [`BuildError`].
 ///
 /// # Examples
 ///
@@ -1135,15 +1223,14 @@ pub fn walk(expression: &str, directory: impl AsRef<Path>) -> Result<Walk<'stati
 /// }
 /// ```
 ///
-/// [`ParseError`]: crate::ParseError
-/// [`RuleError`]: crate::RuleError
+/// [`BuildError`]: crate::BuildError
 /// [`walk`]: crate::walk()
 /// [`WalkBehavior`]: crate::WalkBehavior
 pub fn walk_with_behavior(
     expression: &str,
     directory: impl AsRef<Path>,
     behavior: impl Into<WalkBehavior>,
-) -> Result<Walk<'static>, GlobError> {
+) -> Result<Walk<'static>, BuildError> {
     let (prefix, glob) = Glob::new(expression)?.partition();
     Ok(glob
         .walk_with_behavior(directory.as_ref().join(prefix), behavior)
@@ -1234,7 +1321,7 @@ pub const fn is_contextual_meta_character(x: char) -> bool {
     matches!(x, '-')
 }
 
-fn parse_and_check(expression: &str) -> Result<Tokenized, GlobError> {
+fn parse_and_check(expression: &str) -> Result<Tokenized, BuildError> {
     let tokenized = token::parse(expression)?;
     rule::check(&tokenized)?;
     Ok(tokenized)
@@ -1263,7 +1350,7 @@ fn parse_and_diagnose(expression: &str) -> DiagnosticResult<Tokenized> {
 mod tests {
     use std::path::Path;
 
-    use crate::{Any, CandidatePath, Glob, GlobError, Pattern};
+    use crate::{Any, BuildError, CandidatePath, ErrorKind, Glob, Pattern};
 
     #[test]
     fn escape() {
@@ -1567,15 +1654,33 @@ mod tests {
 
     #[test]
     fn reject_glob_with_oversized_invariant_repetition_tokens() {
-        assert!(matches!(Glob::new("<a:65536>"), Err(GlobError::Rule(_))));
-        assert!(matches!(Glob::new("<long:16500>"), Err(GlobError::Rule(_))));
+        assert!(matches!(
+            Glob::new("<a:65536>"),
+            Err(BuildError {
+                kind: ErrorKind::Rule(_),
+                ..
+            }),
+        ));
+        assert!(matches!(
+            Glob::new("<long:16500>"),
+            Err(BuildError {
+                kind: ErrorKind::Rule(_),
+                ..
+            }),
+        ));
         assert!(matches!(
             Glob::new("a<long:16500>b"),
-            Err(GlobError::Rule(_)),
+            Err(BuildError {
+                kind: ErrorKind::Rule(_),
+                ..
+            }),
         ));
         assert!(matches!(
             Glob::new("{<a:65536>,<long:16500>}"),
-            Err(GlobError::Rule(_)),
+            Err(BuildError {
+                kind: ErrorKind::Rule(_),
+                ..
+            }),
         ));
     }
 
@@ -1600,7 +1705,10 @@ mod tests {
     fn reject_glob_with_oversized_program() {
         assert!(matches!(
             Glob::new("<a*:1000000>"),
-            Err(GlobError::Compile(_))
+            Err(BuildError {
+                kind: ErrorKind::Compile(_),
+                ..
+            }),
         ));
     }
 
@@ -1993,56 +2101,6 @@ mod tests {
 
         assert!(glob.is_match(Path::new("file.ext")));
         assert!(glob.is_match(Path::new("/root/file.ext").strip_prefix(prefix).unwrap()));
-    }
-
-    #[test]
-    fn query_glob_variance() {
-        assert!(Glob::new("").unwrap().variance().is_invariant());
-        assert!(Glob::new("/a/file.ext").unwrap().variance().is_invariant());
-        assert!(Glob::new("/a/{file.ext}")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        assert!(Glob::new("{a/b/file.ext}")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        assert!(Glob::new("{a,a}").unwrap().variance().is_invariant());
-        #[cfg(windows)]
-        assert!(Glob::new("{a,A}").unwrap().variance().is_invariant());
-        assert!(Glob::new("<a/b:2>").unwrap().variance().is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a-a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-        #[cfg(unix)]
-        assert!(Glob::new("/[a-aaa-a]/file.ext")
-            .unwrap()
-            .variance()
-            .is_invariant());
-
-        assert!(Glob::new("/a/{b,c}").unwrap().variance().is_variant());
-        assert!(Glob::new("<a/b:1,>").unwrap().variance().is_variant());
-        assert!(Glob::new("/[ab]/file.ext").unwrap().variance().is_variant());
-        assert!(Glob::new("**").unwrap().variance().is_variant());
-        assert!(Glob::new("/a/*.ext").unwrap().variance().is_variant());
-        assert!(Glob::new("/a/b*").unwrap().variance().is_variant());
-        #[cfg(unix)]
-        assert!(Glob::new("/a/(?i)file.ext")
-            .unwrap()
-            .variance()
-            .is_variant());
-        #[cfg(windows)]
-        assert!(Glob::new("/a/(?-i)file.ext")
-            .unwrap()
-            .variance()
-            .is_variant());
     }
 
     #[test]

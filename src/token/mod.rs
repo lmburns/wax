@@ -62,6 +62,10 @@ impl<'t, A> Tokenized<'t, A> {
         &self.tokens
     }
 
+    // This function is used to implement `diagnostic-inspect` features but is
+    // also used in tests. Rather than cover the complete configuration set,
+    // simply allow it to remain unused as part of the `Tokenized` API.
+    #[cfg_attr(not(feature = "diagnostics-inspect"), allow(unused))]
     pub fn variance<T>(&self) -> Variance<T>
     where
         T: Invariance,
@@ -1031,7 +1035,7 @@ mod tests {
         let literals: Vec<_> = tokenized
             .tokens()
             .iter()
-            .flat_map(|token| match token.kind {
+            .filter_map(|token| match token.kind {
                 TokenKind::Literal(ref literal) => Some(literal),
                 _ => None,
             })
